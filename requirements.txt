@@ -1,0 +1,4 @@
+# Direct dependencies (pinned)
+# Generated from working venv on 2026-02-19
+garminconnect==0.2.38
+garth==0.5.21

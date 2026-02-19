@@ -1,0 +1,4 @@
+.venv/
+.config/
+.kinomap_garmin.json
+*.tcx

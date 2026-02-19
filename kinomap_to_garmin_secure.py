@@ -1,0 +1,559 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import time
+import hashlib
+import json
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from pathlib import Path
+from garth.exc import GarthHTTPError
+
+from garminconnect import Garmin
+def load_env_file(path: Path) -> None:
+    """Load simple KEY=VALUE lines into environment (if not already set)."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        val = v.strip().strip('"').strip("'")
+        os.environ.setdefault(k.strip(), val)
+
+# Defaults (you can override with env vars if you want)
+DEFAULT_GEAR_UUID = os.getenv("GEAR_UUID", "e188437497a041179d6ce51cf2024310")
+DEFAULT_PREFIX = os.getenv("TITLE_PREFIX", "Romaskin – ")
+ACTIVITY_PAGE_SIZE = 200
+
+# DB
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / ".kinomap_garmin.json"
+
+def activity_exists(api: Garmin, activity_id: int) -> bool:
+    try:
+        api.get_activity_details(activity_id)
+        return True
+    except GarthHTTPError as e:
+        # 404 = finnes ikke
+        if "404" in str(e):
+            return False
+        # Andre HTTP-feil → re-raise
+        raise
+
+def load_db() -> dict:
+    if not DB_PATH.exists():
+        return {"hash_to_activity": {}, "gear_by_activity": {}}
+
+    try:
+        d = json.loads(DB_PATH.read_text(encoding="utf-8"))
+        if not isinstance(d, dict):
+            return {"hash_to_activity": {}, "gear_by_activity": {}}
+        d.setdefault("hash_to_activity", {})
+        d.setdefault("gear_by_activity", {})
+        return d
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {"hash_to_activity": {}, "gear_by_activity": {}}
+
+def save_db(d: dict) -> None:
+    tmp = DB_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(DB_PATH)
+
+def ensure_gear_cached(api: Garmin, activity_id: int, gear_uuid: str) -> str:
+    db = load_db()
+    gear_map = db["gear_by_activity"]
+
+    key = str(activity_id)
+    if gear_map.get(key) == str(gear_uuid):
+        return "already"
+
+    api.add_gear_to_activity(gear_uuid, activity_id)
+    gear_map[key] = str(gear_uuid)
+    save_db(db)
+    return "added"
+
+def parse_tcx_metadata(tcx: Path):
+    ns = {"tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
+    tree = ET.parse(tcx)
+    root = tree.getroot()
+
+    laps = root.findall(".//tcx:Lap", ns)
+    if not laps:
+        raise SystemExit("Fant ingen <Lap> i TCX.")
+
+    # Start = StartTime på første lap
+    start_str = laps[0].attrib.get("StartTime")
+    if not start_str:
+        raise SystemExit("Mangler StartTime-attributt på første <Lap> i TCX.")
+    dt = datetime.fromisoformat(start_str.replace("Z", "+00:00")).astimezone(timezone.utc)
+    start_unix = int(dt.timestamp())
+
+    # Summer varighet og distanse over alle laps
+    dist = 0.0
+    dur = 0.0
+    for lap in laps:
+        dm = lap.findtext("tcx:DistanceMeters", default="0", namespaces=ns)
+        ts = lap.findtext("tcx:TotalTimeSeconds", default="0", namespaces=ns)
+        try:
+            dist += float(dm)
+        except ValueError:
+            pass
+        try:
+            dur += float(ts)
+        except ValueError:
+            pass
+
+    return start_unix, dist, dur
+
+def set_event_type(api: Garmin, activity_id: int, type_key: str):
+    type_map = {
+        "training": {"typeId": 4, "typeKey": "training", "sortOrder": 7},
+        "race": {"typeId": 1, "typeKey": "race", "sortOrder": 5},
+    }
+
+    if type_key not in type_map:
+        raise ValueError(f"Unknown event type key: {type_key}")
+
+    url = f"{api.garmin_connect_activity}/{activity_id}"
+
+    payload = {
+        "activityId": activity_id,
+        "eventTypeDTO": type_map[type_key],
+    }
+
+    return api.garth.put("connectapi", url, json=payload, api=True)
+
+def parse_start_gmt(s: str) -> int:
+    # "YYYY-MM-DD HH:MM:SS"
+    dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+def find_uploaded_activity(
+    api: Garmin,
+    exp_start_unix: int,
+    exp_distance_m: float,
+    exp_duration_s: float,
+    timeout_s: int = 90,
+) -> int:
+    dist_tol = 50.0   # meters
+    dur_tol = 15.0    # seconds
+    start_tol = 120   # seconds
+
+    deadline = time.time() + timeout_s
+    last_seen = None
+
+    while time.time() < deadline:
+        acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+
+        matches = []
+        for a in acts:
+            st = a.get("startTimeGMT")
+            if not st:
+                continue
+            try:
+                st_unix = parse_start_gmt(st)
+            except Exception:
+                continue
+
+            dist = a.get("distance")
+            dur = a.get("duration")
+            if dist is None or dur is None:
+                continue
+
+            if abs(st_unix - exp_start_unix) <= start_tol \
+               and abs(float(dist) - exp_distance_m) <= dist_tol \
+               and abs(float(dur) - exp_duration_s) <= dur_tol:
+                matches.append(a)
+
+        if len(matches) == 1:
+            return matches[0]["activityId"]
+
+        if matches:
+            last_seen = [
+                (
+                    m.get("activityId"),
+                    m.get("startTimeGMT"),
+                    m.get("distance"),
+                    m.get("duration"),
+                    (m.get("activityType") or {}).get("typeKey"),
+                )
+                for m in matches
+            ]
+
+        time.sleep(3)
+
+    raise RuntimeError(
+        f"Fant ikke entydig match for opplastet aktivitet innen {timeout_s}s. "
+        f"Last matches: {last_seen}"
+    )
+
+def set_activity_type(api: Garmin, activity_id: int, type_key: str = "indoor_rowing"):
+    # Minimal DTO for Indoor Rowing (fra tidligere arbeid)
+    if type_key != "indoor_rowing":
+        raise ValueError("Foreløpig støttes kun type_key='indoor_rowing'")
+
+    url = f"{api.garmin_connect_activity}/{activity_id}"
+
+    payload = {
+        "activityId": activity_id,
+        "activityTypeDTO": {
+            "typeId": 32,
+            "typeKey": "indoor_rowing",
+            "parentTypeId": 29,
+        },
+    }
+
+    return api.garth.put("connectapi", url, json=payload, api=True)
+
+def sanity_print_match(api: Garmin, aid: int, exp_start_unix: int, exp_dist: float, exp_dur: float):
+    """
+    Printer:
+      - TCX vs Garmin (summary) diffs
+      - noen nøkkelstats fra summary
+      - gear-status fra lokal DB (samme DB som SHA256->activityId)
+
+    Forutsetter at du har:
+      - parse_start_gmt()
+      - load_db()  (returnerer dict med "gear_by_activity")
+    """
+    acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+    a = next((x for x in acts if x.get("activityId") == aid), None)
+
+    if not a:
+        print("SANITY: Fant ikke activityId i get_activities-lista (kan være paging).")
+        return
+
+    def fmt(x):
+        if x is None:
+            return None
+        try:
+            xf = float(x)
+            # HR/power/distance/duration ser bedre ut med én desimal
+            if abs(xf) >= 10:
+                return f"{xf:.1f}"
+            return f"{xf:.3f}"
+        except Exception:
+            return x
+
+    def type_key(obj):
+        return (
+            (obj.get("activityType") or {}).get("typeKey")
+            or (obj.get("activityTypeDTO") or {}).get("typeKey")
+            or obj.get("activityTypeKey")
+        )
+
+    # ---- Start time ----
+    st = a.get("startTimeGMT")
+    st_unix = None
+    if st:
+        try:
+            st_unix = parse_start_gmt(st)
+        except Exception:
+            st_unix = None
+
+    # ---- Distance & duration ----
+    got_dist = a.get("distance")
+    got_dur = a.get("duration")
+
+    print("\nSANITY: TCX vs Garmin (summary)")
+    print(f"- activityId: {aid}")
+
+    if st_unix is not None:
+        print(f"- startTimeGMT: {st}  (Δ {st_unix - exp_start_unix:+d}s)")
+    else:
+        print(f"- startTimeGMT: {st}  (kunne ikke parse til unix)")
+
+    if got_dist is not None:
+        d = float(got_dist) - float(exp_dist)
+        print(f"- distance:    got={fmt(got_dist)} m, exp={fmt(exp_dist)} m  (Δ {d:+.1f} m)")
+    else:
+        print(f"- distance:    got=None, exp={fmt(exp_dist)} m")
+
+    if got_dur is not None:
+        d = float(got_dur) - float(exp_dur)
+        print(f"- duration:    got={fmt(got_dur)} s, exp={fmt(exp_dur)} s  (Δ {d:+.1f} s)")
+    else:
+        print(f"- duration:    got=None, exp={fmt(exp_dur)} s")
+
+    # ---- Metadata ----
+    print(f"- typeKey:     {type_key(a)}")
+    print(f"- eventType:   {a.get('eventType')}")
+    print(f"- name:        {a.get('activityName')}")
+    print(f"- calories:    {fmt(a.get('calories'))}")
+
+    # ---- Stats (summary) ----
+    for k in ["averageHR", "maxHR", "averagePower", "maxPower", "normalizedPower"]:
+        if k in a:
+            print(f"- {k}: {fmt(a.get(k))}")
+
+    # ---- Gear (lokal DB-cache) ----
+    try:
+        db = load_db()
+        g = db.get("gear_by_activity", {}).get(str(aid))
+        print(f"- gear (cache): {g if g else 'ukjent'}")
+    except Exception as e:
+        print(f"- gear (cache): kunne ikke leses ({type(e).__name__}: {e})")
+
+    # ---- Optional: details stats (ikke gear) ----
+    try:
+        details = api.get_activity_details(aid)
+        for k in [
+            "averageHR", "maxHR",
+            "averagePower", "maxPower",
+            "normalizedPower",
+            "averageCadence", "maxCadence",
+            "averageStrokeCadence", "maxStrokeCadence",
+        ]:
+            if k in details:
+                print(f"- {k} (details): {fmt(details.get(k))}")
+    except Exception:
+        # Ikke kritisk; summary-print er hovedpoenget
+        pass
+
+def find_existing_activity(api: Garmin, exp_start_unix: int, exp_distance_m: float, exp_duration_s: float):
+    acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+
+    dist_tol = 50.0
+    dur_tol = 15.0
+    start_tol = 120
+
+    for a in acts:
+        st = a.get("startTimeGMT")
+        if not st:
+            continue
+        try:
+            st_unix = parse_start_gmt(st)
+        except Exception:
+            continue
+
+        dist = a.get("distance")
+        dur = a.get("duration")
+        if dist is None or dur is None:
+            continue
+
+        if abs(st_unix - exp_start_unix) <= start_tol \
+           and abs(float(dist) - exp_distance_m) <= dist_tol \
+           and abs(float(dur) - exp_duration_s) <= dur_tol:
+            return a["activityId"]
+
+    return None
+
+def needs_patch(summary: dict, title: str, event_type: str) -> dict:
+    """
+    Returnerer hvilke ting som må oppdateres.
+    """
+    result = {
+        "type": False,
+        "title": False,
+        "event": False,
+    }
+
+    # Type
+    type_key = (
+        (summary.get("activityType") or {}).get("typeKey")
+        or (summary.get("activityTypeDTO") or {}).get("typeKey")
+        or summary.get("activityTypeKey")
+    )
+    if type_key != "indoor_rowing":
+        result["type"] = True
+
+    # Title
+    if summary.get("activityName") != title:
+        result["title"] = True
+
+    # Event type
+    ev = (
+        (summary.get("eventType") or {}).get("typeKey")
+        or (summary.get("eventTypeDTO") or {}).get("typeKey")
+    )
+
+    if ev != event_type:
+        result["event"] = True
+
+    return result
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def is_conflict_409(e: Exception) -> bool:
+    # Robust: sjekk response.status_code hvis den finnes (requests/garth), ellers fall tilbake på tekst.
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        code = getattr(resp, "status_code", None)
+        if code == 409:
+            return True
+
+    msg = str(e)
+    return (" 409 " in f" {msg} ") or ("409" in msg and "Conflict" in msg)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("tcx", help="Kinomap TCX file")
+    ap.add_argument("--race", action="store_true", help="Set event type to race (default: training)")
+    ap.add_argument("--sanity", action="store_true", help="Print TCX vs Garmin diffs + cache info")
+    ap.add_argument("--force-upload", action="store_true", help="Try upload even if we find duplicates (may hit 409)")
+    ap.add_argument("--dry-run", action="store_true", help="Parse + duplicate-check only; do not upload or patch")
+    args = ap.parse_args()
+
+    tcx = Path(args.tcx)
+    if not tcx.exists():
+        raise SystemExit(f"Fant ikke: {tcx}")
+
+    # Load credentials from ~/.config/kinomap_to_garmin.env if present
+    load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
+
+    email = os.getenv("GARMIN_EMAIL")
+    password = os.getenv("GARMIN_PASSWORD")
+    if not email or not password:
+        raise SystemExit("Sett GARMIN_EMAIL og GARMIN_PASSWORD.")
+
+    # Desired metadata
+    event_type = "race" if args.race else "training"
+    title = f"{DEFAULT_PREFIX}{tcx.stem}"
+
+    # Parse TCX metadata
+    exp_start_unix, exp_dist, exp_duration = parse_tcx_metadata(tcx)
+
+    # Login
+    api = Garmin(email, password)
+    api.login()
+
+    # ---- DRY RUN ----
+    if args.dry_run:
+        print("DRY RUN:")
+        print(f"- start_unix: {exp_start_unix}")
+        print(f"- distance:   {exp_dist}")
+        print(f"- duration:   {exp_duration}")
+
+        file_hash = sha256_file(tcx)
+        db = load_db()
+        hash_to_activity = db.get("hash_to_activity", {})
+        aid = None
+
+        if not args.force_upload and file_hash in hash_to_activity:
+            candidate = hash_to_activity[file_hash]
+            if activity_exists(api, candidate):
+                aid = candidate
+                print(f"- SHA256 match: {aid}")
+            else:
+                print(f"- SHA256 match pekte på slettet/ukjent activityId={candidate} (vil falle tilbake til matching/upload)")
+
+        if aid is None and not args.force_upload:
+            existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration)
+            if existing_id:
+                aid = existing_id
+                print(f"- Matching treff: {aid}")
+
+        if aid is None:
+            print("- Ingen eksisterende aktivitet funnet (ville lastet opp)")
+
+        if args.sanity and aid is not None:
+            sanity_print_match(api, aid, exp_start_unix, exp_dist, exp_duration)
+
+        return
+
+    # ---- Determine aid: SHA256 -> matching -> upload (with 409 fallback) ----
+    file_hash = sha256_file(tcx)
+    db = load_db()
+    hash_to_activity = db.setdefault("hash_to_activity", {})
+
+    aid = None
+
+    # 1) SHA256 first
+    if not args.force_upload and file_hash in hash_to_activity:
+        candidate = hash_to_activity[file_hash]
+        if activity_exists(api, candidate):
+            aid = candidate
+            print(f"SHA256 match: bruker tidligere activityId={aid}")
+        else:
+            print(
+                f"NB: SHA256 match pekte på slettet/ukjent activityId={candidate}. Fjerner fra db.",
+                file=sys.stderr,
+            )
+            del hash_to_activity[file_hash]
+            save_db(db)
+
+    # 2) Fallback: deterministic matching
+    if aid is None and not args.force_upload:
+        existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration)
+        if existing_id:
+            aid = existing_id
+            print(f"Fant eksisterende aktivitet via matching: {aid}")
+
+    # 3) Upload if needed (or forced)
+    if aid is None:
+        print("Laster opp TCX…")
+        try:
+            api.upload_activity(str(tcx))
+            aid = find_uploaded_activity(api, exp_start_unix, exp_dist, exp_duration, timeout_s=90)
+        except Exception as e:
+            # Force-upload can legitimately hit Garmin duplicate protection (409)
+            if is_conflict_409(e):
+                print("NB: Upload ga 409 Conflict (duplikat). Faller tilbake til matching…", file=sys.stderr)
+                existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration)
+                if not existing_id:
+                    raise RuntimeError(
+                        "Fikk 409 Conflict, men klarte ikke finne eksisterende aktivitet via matching."
+                    ) from e
+                aid = existing_id
+            else:
+                raise
+
+    # ✅ Persist hash->aid so next run becomes a SHA hit (even if we matched/uploaded/409-fellbacked)
+    prev = hash_to_activity.get(file_hash)
+    if prev != aid:
+        hash_to_activity[file_hash] = aid
+        save_db(db)
+
+    # ---- Fetch summary and patch only if needed ----
+    acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+    summary = next((x for x in acts if x.get("activityId") == aid), None)
+    if not summary:
+        raise RuntimeError("Fant ikke aktivitet i get_activities-lista etter at aid ble bestemt.")
+
+    patch_flags = needs_patch(summary, title, event_type)
+
+    if patch_flags.get("type"):
+        try:
+            set_activity_type(api, aid, "indoor_rowing")
+        except Exception as e:
+            print("NB: Klarte ikke sette Aktivitetstype:", e, file=sys.stderr)
+
+    if patch_flags.get("title"):
+        try:
+            api.set_activity_name(aid, title)
+        except Exception as e:
+            print("NB: Klarte ikke sette tittel:", e, file=sys.stderr)
+
+    if patch_flags.get("event"):
+        try:
+            set_event_type(api, aid, event_type)
+        except Exception as e:
+            print("NB: Klarte ikke sette Hendelsestype:", e, file=sys.stderr)
+
+    # ---- Gear (idempotent via lokal cache) ----
+    try:
+        gear_status = ensure_gear_cached(api, aid, DEFAULT_GEAR_UUID)
+        print("Gear: allerede satt (cache)" if gear_status == "already" else "Gear: lagt til")
+    except Exception as e:
+        print("NB: Klarte ikke sette utstyr:", e, file=sys.stderr)
+
+    # ---- Sanity ----
+    if args.sanity:
+        time.sleep(2)
+        sanity_print_match(api, aid, exp_start_unix, exp_dist, exp_duration)
+
+    print(f"OK: activityId={aid}")
+    print(f"Title: {title}")
+    print(f"Event type: {event_type}")
+    print(f"Gear UUID: {DEFAULT_GEAR_UUID}")
+
+if __name__ == "__main__":
+    main()
