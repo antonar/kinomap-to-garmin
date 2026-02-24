@@ -63,6 +63,20 @@ if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES and RUNNING_ACTIVITY_T
         f"NB: Ugyldig RUNNING_ACTIVITY_TYPE='{RUNNING_ACTIVITY_TYPE_RAW}'. Bruker 'walking' som default.",
         file=sys.stderr,
     )
+
+# Garmin Connect Activity Type IDs (from reverse-engineering API responses)
+# These are used when setting activity types via PUT request to /activity/{id}
+ACTIVITY_TYPE_INDOOR_ROWING = 32
+ACTIVITY_PARENT_TYPE_INDOOR_ROWING = 29
+ACTIVITY_TYPE_WALKING = 9
+ACTIVITY_PARENT_TYPE_WALKING = 17
+ACTIVITY_TYPE_TREADMILL_RUNNING = 18
+ACTIVITY_PARENT_TYPE_TREADMILL_RUNNING = 1
+
+# Garmin Connect Event Type IDs (training vs race)
+EVENT_TYPE_TRAINING = 4
+EVENT_TYPE_RACE = 1
+
 ACTIVITY_PAGE_SIZE = 200
 
 def activity_exists(api: Garmin, activity_id: int) -> bool:
@@ -266,8 +280,8 @@ def print_run_config(
 
 def set_event_type(api: Garmin, activity_id: int, type_key: str):
     type_map = {
-        "training": {"typeId": 4, "typeKey": "training", "sortOrder": 7},
-        "race": {"typeId": 1, "typeKey": "race", "sortOrder": 5},
+        "training": {"typeId": EVENT_TYPE_TRAINING, "typeKey": "training", "sortOrder": 7},
+        "race": {"typeId": EVENT_TYPE_RACE, "typeKey": "race", "sortOrder": 5},
     }
 
     if type_key not in type_map:
@@ -348,9 +362,9 @@ def find_uploaded_activity(
 
 def set_activity_type(api: Garmin, activity_id: int, type_key: str = "indoor_rowing"):
     type_map = {
-        "indoor_rowing": {"typeId": 32, "typeKey": "indoor_rowing", "parentTypeId": 29},
-        "walking": {"typeId": 9, "typeKey": "walking", "parentTypeId": 17},
-        "treadmill_running": {"typeId": 18, "typeKey": "treadmill_running", "parentTypeId": 1},
+        "indoor_rowing": {"typeId": ACTIVITY_TYPE_INDOOR_ROWING, "typeKey": "indoor_rowing", "parentTypeId": ACTIVITY_PARENT_TYPE_INDOOR_ROWING},
+        "walking": {"typeId": ACTIVITY_TYPE_WALKING, "typeKey": "walking", "parentTypeId": ACTIVITY_PARENT_TYPE_WALKING},
+        "treadmill_running": {"typeId": ACTIVITY_TYPE_TREADMILL_RUNNING, "typeKey": "treadmill_running", "parentTypeId": ACTIVITY_PARENT_TYPE_TREADMILL_RUNNING},
     }
 
     if type_key not in type_map:
