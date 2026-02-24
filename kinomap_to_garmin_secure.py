@@ -33,8 +33,21 @@ load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
 
 # Defaults (you can override with env vars if you want)
 LEGACY_DEFAULT_GEAR_UUID = os.getenv("GEAR_UUID", "e188437497a041179d6ce51cf2024310")
-DEFAULT_ROWING_GEAR_UUID = os.getenv("ROWING_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID)
-DEFAULT_TREADMILL_GEAR_UUID = os.getenv("TREADMILL_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID)
+DEFAULT_ROWING_GEAR_UUID = os.getenv("ROWING_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID).strip()
+DEFAULT_TREADMILL_GEAR_UUID = os.getenv("TREADMILL_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID).strip()
+
+# Validate that gear UUIDs are not empty
+if not DEFAULT_ROWING_GEAR_UUID:
+    raise SystemExit(
+        "ERROR: Gear UUID for rowing is empty. "
+        "Set ROWING_GEAR_UUID or GEAR_UUID in .config/kinomap_to_garmin.env"
+    )
+if not DEFAULT_TREADMILL_GEAR_UUID:
+    raise SystemExit(
+        "ERROR: Gear UUID for treadmill is empty. "
+        "Set TREADMILL_GEAR_UUID or GEAR_UUID in .config/kinomap_to_garmin.env"
+    )
+
 DEFAULT_ROWING_PREFIX = os.getenv("TITLE_PREFIX", "Romaskin – ")
 DEFAULT_TREADMILL_PREFIX = os.getenv("TREADMILL_TITLE_PREFIX", "Gåmølle - ")
 RUNNING_ACTIVITY_TYPE_RAW = os.getenv("RUNNING_ACTIVITY_TYPE", "walking").strip().lower()
@@ -143,9 +156,12 @@ def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str) -> d
         except Exception as e:
             failed.append((gid, f"{type(e).__name__}: {e}"))
 
-    db = load_db()
-    db.setdefault("gear_by_activity", {})[str(activity_id)] = keep
-    save_db(db)
+    # Only update database if all removal operations succeeded.
+    # This prevents database state from diverging from Garmin API state.
+    if not failed:
+        db = load_db()
+        db.setdefault("gear_by_activity", {})[str(activity_id)] = keep
+        save_db(db)
 
     return {
         "kept": keep,
