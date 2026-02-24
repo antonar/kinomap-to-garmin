@@ -161,7 +161,45 @@ done
 
 ------------------------------------------------------------------------
 
-## 🔁 Duplicate Handling
+## �️ Historical Activity Cleanup
+
+For existing Kinomap treadmill activities uploaded before sport-aware support was added,
+use the historical cleanup utility:
+
+```bash
+python3 fix_historical_treadmill_activities.py
+```
+
+### Dry-run mode (default)
+
+Lists all historical treadmill activities needing fixes:
+
+```bash
+python3 fix_historical_treadmill_activities.py
+```
+
+Output shows:
+- Activity ID, date, current type, gear status, duration
+- Which activities need type fixes vs gear-only fixes
+
+### Apply fixes
+
+Automatically correct all historical activities:
+
+```bash
+python3 fix_historical_treadmill_activities.py --apply
+```
+
+This will:
+1. Set activity type to `walking` (if incorrect)
+2. Enforce single gear link to `gåmølle` (treadmill gear UUID from env)
+
+**Note:** The utility searches for activities with name `"Gå på tredemølle"` 
+since **2024-10-04** (the date sport-aware support was added).
+
+------------------------------------------------------------------------
+
+## �🔁 Duplicate Handling
 
 The tool prevents duplicate uploads using:
 
