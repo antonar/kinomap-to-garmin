@@ -37,7 +37,19 @@ DEFAULT_ROWING_GEAR_UUID = os.getenv("ROWING_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUI
 DEFAULT_TREADMILL_GEAR_UUID = os.getenv("TREADMILL_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID)
 DEFAULT_ROWING_PREFIX = os.getenv("TITLE_PREFIX", "Romaskin – ")
 DEFAULT_TREADMILL_PREFIX = os.getenv("TREADMILL_TITLE_PREFIX", "Gåmølle - ")
-DEFAULT_RUNNING_ACTIVITY_TYPE = os.getenv("RUNNING_ACTIVITY_TYPE", "walking").strip().lower()
+RUNNING_ACTIVITY_TYPE_RAW = os.getenv("RUNNING_ACTIVITY_TYPE", "walking").strip().lower()
+# Validate and normalize RUNNING_ACTIVITY_TYPE early to prevent invalid config from being used
+ALLOWED_RUNNING_TYPES = {"", "keep", "imported", "none", "walking", "treadmill_running"}
+DEFAULT_RUNNING_ACTIVITY_TYPE = (
+    RUNNING_ACTIVITY_TYPE_RAW
+    if RUNNING_ACTIVITY_TYPE_RAW in ALLOWED_RUNNING_TYPES
+    else "walking"
+)
+if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES and RUNNING_ACTIVITY_TYPE_RAW != "walking":
+    print(
+        f"NB: Ugyldig RUNNING_ACTIVITY_TYPE='{RUNNING_ACTIVITY_TYPE_RAW}'. Bruker 'walking' som default.",
+        file=sys.stderr,
+    )
 ACTIVITY_PAGE_SIZE = 200
 
 def activity_exists(api: Garmin, activity_id: int) -> bool:
@@ -116,8 +128,11 @@ def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str) -> d
     linked = _extract_activity_gear_uuids(payload)
 
     if keep not in linked:
-        api.add_gear_to_activity(keep, activity_id)
-        linked.append(keep)
+        try:
+            api.add_gear_to_activity(keep, activity_id)
+            linked.append(keep)
+        except Exception as e:
+            failed.append((keep, f"{type(e).__name__}: {e}"))
 
     for gid in sorted(set(linked)):
         if gid == keep:
@@ -190,21 +205,23 @@ def resolve_desired_activity_type(tcx_sport: str, creator_name: str) -> str | No
     if sport == "running" or "kinomapvirtualrun" in creator:
         if DEFAULT_RUNNING_ACTIVITY_TYPE in {"", "keep", "imported", "none"}:
             return None
-        if DEFAULT_RUNNING_ACTIVITY_TYPE in {"walking", "treadmill_running"}:
-            return DEFAULT_RUNNING_ACTIVITY_TYPE
-        return "walking"
+        # DEFAULT_RUNNING_ACTIVITY_TYPE is pre-validated at module level,
+        # so it's guaranteed to be "walking" or "treadmill_running" here
+        return DEFAULT_RUNNING_ACTIVITY_TYPE
 
     return None
 
-def resolve_title_prefix(tcx_sport: str) -> str:
+def resolve_title_prefix(tcx_sport: str, creator_name: str = "") -> str:
     sport = (tcx_sport or "").strip().lower()
-    if sport == "running":
+    creator = (creator_name or "").strip().lower()
+    if sport == "running" or "kinomapvirtualrun" in creator:
         return DEFAULT_TREADMILL_PREFIX
     return DEFAULT_ROWING_PREFIX
 
-def resolve_gear_uuid(tcx_sport: str) -> str:
+def resolve_gear_uuid(tcx_sport: str, creator_name: str = "") -> str:
     sport = (tcx_sport or "").strip().lower()
-    if sport == "running":
+    creator = (creator_name or "").strip().lower()
+    if sport == "running" or "kinomapvirtualrun" in creator:
         return DEFAULT_TREADMILL_GEAR_UUID
     return DEFAULT_ROWING_GEAR_UUID
 
@@ -604,17 +621,11 @@ def main():
     # Desired metadata
     event_type = "race" if args.race else "training"
 
-    if DEFAULT_RUNNING_ACTIVITY_TYPE not in {"", "keep", "imported", "none", "walking", "treadmill_running"}:
-        print(
-            f"NB: Ugyldig RUNNING_ACTIVITY_TYPE='{DEFAULT_RUNNING_ACTIVITY_TYPE}'. Bruker 'walking'.",
-            file=sys.stderr,
-        )
-
     # Parse TCX metadata
     exp_start_unix, exp_dist, exp_duration, tcx_sport, creator_name = parse_tcx_metadata(tcx)
     desired_type_key = resolve_desired_activity_type(tcx_sport, creator_name)
-    title = f"{resolve_title_prefix(tcx_sport)}{tcx.stem}"
-    desired_gear_uuid = resolve_gear_uuid(tcx_sport)
+    title = f"{resolve_title_prefix(tcx_sport, creator_name)}{tcx.stem}"
+    desired_gear_uuid = resolve_gear_uuid(tcx_sport, creator_name)
 
     if args.show_config:
         print_run_config(
