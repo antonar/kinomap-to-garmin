@@ -733,7 +733,7 @@ def main():
 
     patch_flags = needs_patch(summary, title, event_type, desired_type_key)
 
-    if patch_flags.get("type"):
+    if patch_flags.get("type") and desired_type_key is not None:
         try:
             set_activity_type(api, aid, desired_type_key)
         except Exception as e:
