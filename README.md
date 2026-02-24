@@ -117,7 +117,7 @@ Pinned direct dependencies:
   ------------------ ------------------------------------------------
   `--race`           Set event type to `race` (default: `training`)
   `--sanity`         Print TCX vs Garmin summary comparison
-    `--show-config`    Print resolved config (type/title/gear) before run
+  `--show-config`    Print resolved config (type/title/gear) before run
   `--force-upload`   Force upload even if SHA match exists
   `--dry-run`        No upload or patching --- only matching logic
 
@@ -161,7 +161,7 @@ done
 
 ------------------------------------------------------------------------
 
-## �️ Historical Activity Cleanup
+## Historical Activity Cleanup
 
 For existing Kinomap treadmill activities uploaded before sport-aware support was added,
 use the historical cleanup utility:

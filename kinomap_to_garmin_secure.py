@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import argparse
 import os
 import sys
@@ -142,16 +144,23 @@ def _extract_activity_gear_uuids(payload) -> list[str]:
             uuids.append(str(gid))
     return uuids
 
-def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str) -> dict:
+def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str, gear_payload: dict | list | None = None) -> dict:
     """
     Ensure exactly one gear link remains on activity: keep_gear_uuid.
     Best effort: does not raise on individual unlink failures.
+    
+    If gear_payload is provided, use it (from cache). Otherwise fetch from API.
+    This allows callers to cache and reuse get_activity_gear() results.
     """
     keep = str(keep_gear_uuid)
     removed = []
     failed = []
 
-    payload = api.get_activity_gear(activity_id)
+    if gear_payload is None:
+        payload = api.get_activity_gear(activity_id)
+    else:
+        payload = gear_payload
+    
     linked = _extract_activity_gear_uuids(payload)
 
     if keep not in linked:
@@ -738,7 +747,7 @@ def main():
     hash_to_activity = db.setdefault("hash_to_activity", {})
 
     aid = None
-    acts = None  # Cach get_activities() result for reuse (issue #9 optimization)
+    acts = None  # Cache get_activities() result for reuse (issue #9 optimization)
 
     # 1) SHA256 first
     if not args.force_upload and file_hash in hash_to_activity:

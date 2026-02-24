@@ -17,7 +17,6 @@ Usage:
 
 import argparse
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,7 +45,15 @@ load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
 
 # Defaults
 LEGACY_DEFAULT_GEAR_UUID = os.getenv("GEAR_UUID", "e188437497a041179d6ce51cf2024310")
-DEFAULT_TREADMILL_GEAR_UUID = os.getenv("TREADMILL_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID)
+DEFAULT_TREADMILL_GEAR_UUID = os.getenv("TREADMILL_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID).strip()
+
+# Validate that gear UUID is not empty
+if not DEFAULT_TREADMILL_GEAR_UUID:
+    raise SystemExit(
+        "ERROR: Gear UUID for treadmill is empty. "
+        "Set TREADMILL_GEAR_UUID or GEAR_UUID in .config/kinomap_to_garmin.env"
+    )
+
 ACTIVITY_PAGE_SIZE = 200
 
 def _extract_activity_gear_uuids(payload) -> list[str]:
