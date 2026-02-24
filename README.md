@@ -199,7 +199,7 @@ since **2024-10-04** (the date sport-aware support was added).
 
 ------------------------------------------------------------------------
 
-## �🔁 Duplicate Handling
+## 🔁 Duplicate Handling
 
 The tool prevents duplicate uploads using:
 
