@@ -372,6 +372,8 @@ def sanity_print_match(
     exp_dist: float,
     exp_dur: float,
     expected_gear_uuid: str | None = None,
+    acts: list | None = None,
+    cached_gear_payload: dict | list | None = None,
 ):
     """
     Printer:
@@ -382,8 +384,13 @@ def sanity_print_match(
     Forutsetter at du har:
       - parse_start_gmt()
       - load_db()  (returnerer dict med "gear_by_activity")
+      
+    If acts is provided, use it (from cache). Otherwise fetch from API.
+    If cached_gear_payload is provided, use it (from cache). Otherwise fetch from API.
+    This allows callers to cache and reuse get_activities() and get_activity_gear() results.
     """
-    acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+    if acts is None:
+        acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
     a = next((x for x in acts if x.get("activityId") == aid), None)
 
     if not a:
@@ -463,7 +470,10 @@ def sanity_print_match(
 
     # ---- Gear (Garmin API, best effort) ----
     try:
-        gear_payload = api.get_activity_gear(aid)
+        if cached_gear_payload is not None:
+            gear_payload = cached_gear_payload
+        else:
+            gear_payload = api.get_activity_gear(aid)
 
         items = []
         if isinstance(gear_payload, list):
@@ -532,8 +542,14 @@ def sanity_print_match(
         # Ikke kritisk; summary-print er hovedpoenget
         pass
 
-def find_existing_activity(api: Garmin, exp_start_unix: int, exp_distance_m: float, exp_duration_s: float):
-    acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+def find_existing_activity(api: Garmin, exp_start_unix: int, exp_distance_m: float, exp_duration_s: float, acts: list | None = None):
+    """Find existing activity by matching start time, distance, and duration.
+    
+    If acts is provided, use it (from cache). Otherwise fetch from API.
+    This allows callers to cache and reuse get_activities() results.
+    """
+    if acts is None:
+        acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
 
     dist_tol = 50.0
     dur_tol = 15.0
@@ -685,8 +701,11 @@ def main():
             else:
                 print(f"- SHA256 match pekte på slettet/ukjent activityId={candidate} (vil falle tilbake til matching/upload)")
 
+        # Cache get_activities() result for reuse in matching and sanity checks (issue #9 optimization)
+        acts = None
         if aid is None and not args.force_upload:
-            existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration)
+            acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+            existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration, acts=acts)
             if existing_id:
                 aid = existing_id
                 print(f"- Matching treff: {aid}")
@@ -695,7 +714,7 @@ def main():
             print("- Ingen eksisterende aktivitet funnet (ville lastet opp)")
 
         if args.sanity and aid is not None:
-            sanity_print_match(api, aid, exp_start_unix, exp_dist, exp_duration, desired_gear_uuid)
+            sanity_print_match(api, aid, exp_start_unix, exp_dist, exp_duration, desired_gear_uuid, acts=acts)
 
         return
 
@@ -705,6 +724,7 @@ def main():
     hash_to_activity = db.setdefault("hash_to_activity", {})
 
     aid = None
+    acts = None  # Cach get_activities() result for reuse (issue #9 optimization)
 
     # 1) SHA256 first
     if not args.force_upload and file_hash in hash_to_activity:
@@ -720,9 +740,10 @@ def main():
             del hash_to_activity[file_hash]
             save_db(db)
 
-    # 2) Fallback: deterministic matching
+    # 2) Fallback: deterministic matching (with cached activities)
     if aid is None and not args.force_upload:
-        existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration)
+        acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)  # Fetch once, reuse
+        existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration, acts=acts)
         if existing_id:
             aid = existing_id
             print(f"Fant eksisterende aktivitet via matching: {aid}")
@@ -737,7 +758,10 @@ def main():
             # Force-upload can legitimately hit Garmin duplicate protection (409)
             if is_conflict_409(e):
                 print("NB: Upload ga 409 Conflict (duplikat). Faller tilbake til matching…", file=sys.stderr)
-                existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration)
+                # Reuse cached acts if available, otherwise fetch
+                if acts is None:
+                    acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+                existing_id = find_existing_activity(api, exp_start_unix, exp_dist, exp_duration, acts=acts)
                 if not existing_id:
                     raise RuntimeError(
                         "Fikk 409 Conflict, men klarte ikke finne eksisterende aktivitet via matching."
@@ -753,7 +777,9 @@ def main():
         save_db(db)
 
     # ---- Fetch summary and patch only if needed ----
-    acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+    # Reuse cached acts if available, otherwise fetch (issue #9 optimization)
+    if acts is None:
+        acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
     summary = next((x for x in acts if x.get("activityId") == aid), None)
     if not summary:
         raise RuntimeError("Fant ikke aktivitet i get_activities-lista etter at aid ble bestemt.")
@@ -780,10 +806,13 @@ def main():
 
     # ---- Gear (idempotent via lokal cache + single-gear policy) ----
     try:
+        # Cache gear payload for reuse in enforce_single_gear and sanity (issue #5 optimization)
+        gear_payload = api.get_activity_gear(aid)
+        
         gear_status = ensure_gear_cached(api, aid, desired_gear_uuid)
         print("Gear: allerede satt (cache)" if gear_status == "already" else "Gear: lagt til")
 
-        single = enforce_single_gear(api, aid, desired_gear_uuid)
+        single = enforce_single_gear(api, aid, desired_gear_uuid, gear_payload=gear_payload)
         if single["removed"]:
             print(f"Gear: fjernet ekstra koblinger ({', '.join(single['removed'])})")
         if single["failed"]:
@@ -794,11 +823,13 @@ def main():
             )
     except Exception as e:
         print("NB: Klarte ikke sette utstyr:", e, file=sys.stderr)
+        gear_payload = None  # Reset cache if error occurred
 
     # ---- Sanity ----
     if args.sanity:
         time.sleep(2)
-        sanity_print_match(api, aid, exp_start_unix, exp_dist, exp_duration, desired_gear_uuid)
+        # Reuse cached acts and gear_payload if available (issue #5 and #9 optimizations)
+        sanity_print_match(api, aid, exp_start_unix, exp_dist, exp_duration, desired_gear_uuid, acts=acts, cached_gear_payload=gear_payload)
 
     print(f"OK: activityId={aid}")
     print(f"TCX sport: {tcx_sport or 'ukjent'}")
