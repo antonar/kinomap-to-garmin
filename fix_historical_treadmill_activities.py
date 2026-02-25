@@ -24,12 +24,10 @@ from pathlib import Path
 from garminconnect import Garmin
 from garmin_utils import (
     load_env_file,
-    _extract_activity_gear_uuids,
+    extract_activity_gear_uuids,
     enforce_single_gear,
     set_activity_type,
     set_event_type,
-    EVENT_TYPE_TRAINING,
-    EVENT_TYPE_RACE,
     ACTIVITY_PAGE_SIZE,
 )
 
@@ -193,7 +191,7 @@ def main():
         # Check gear
         try:
             gear_payload = api.get_activity_gear(aid)
-            gear_uuids = _extract_activity_gear_uuids(gear_payload)
+            gear_uuids = extract_activity_gear_uuids(gear_payload)
         except Exception:
             gear_uuids = []
 
@@ -229,7 +227,7 @@ def main():
 
         try:
             gear_payload = api.get_activity_gear(aid)
-            gear_uuids = _extract_activity_gear_uuids(gear_payload)
+            gear_uuids = extract_activity_gear_uuids(gear_payload)
             if DEFAULT_TREADMILL_GEAR_UUID in gear_uuids:
                 gear_str = "gåmølle ✓"
             elif gear_uuids:

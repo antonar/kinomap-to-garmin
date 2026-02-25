@@ -14,7 +14,6 @@ from garth.exc import GarthHTTPError
 from garminconnect import Garmin
 from garmin_utils import (
     load_env_file,
-    _extract_activity_gear_uuids,
     enforce_single_gear,
     set_activity_type,
     set_event_type,
@@ -70,11 +69,6 @@ if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES:
         f"NB: Ugyldig RUNNING_ACTIVITY_TYPE='{RUNNING_ACTIVITY_TYPE_RAW}'. Bruker 'walking' som default.",
         file=sys.stderr,
     )
-
-# Re-export constants from garmin_utils for backwards compatibility
-# (in case any other code references these from this module)
-
-ACTIVITY_PAGE_SIZE = ACTIVITY_PAGE_SIZE  # Already imported
 
 def activity_exists(api: Garmin, activity_id: int) -> bool:
     try:

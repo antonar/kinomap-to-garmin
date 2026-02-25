@@ -42,7 +42,7 @@ def load_env_file(path: Path) -> None:
         os.environ.setdefault(k.strip(), val)
 
 
-def _extract_activity_gear_uuids(payload) -> list[str]:
+def extract_activity_gear_uuids(payload) -> list[str]:
     """
     Extract gear UUIDs from Garmin API response.
     
@@ -94,7 +94,10 @@ def enforce_single_gear(
         db_path: Optional path to local DB for caching (if None, no DB update)
         
     Returns:
-        dict with keys: "kept", "removed", "failed"
+        dict with keys:
+        - "kept": str (gear UUID) if successfully kept, None if add failed
+        - "removed": list of removed gear UUIDs
+        - "failed": list of (gear_uuid, error_msg) tuples for operations that failed
     """
     keep = str(keep_gear_uuid)
     removed = []
@@ -108,7 +111,7 @@ def enforce_single_gear(
     else:
         payload = gear_payload
     
-    linked = _extract_activity_gear_uuids(payload)
+    linked = extract_activity_gear_uuids(payload)
     
     if verbose:
         print(f"    [DEBUG] Current gear UUIDs: {linked}")
