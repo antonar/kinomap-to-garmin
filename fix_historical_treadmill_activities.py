@@ -405,6 +405,7 @@ def main():
     for item in activities_to_fix:
         aid = item["id"]
         fixes_applied = []
+        had_errors = False
 
         # Fix type
         if item["needs_type"]:
@@ -413,6 +414,7 @@ def main():
                 fixes_applied.append("type→walking")
             except Exception as e:
                 print(f"  ✗ ID {aid}: Could not set type: {e}")
+                had_errors = True
 
         # Fix event type
         if item["needs_event_type"]:
@@ -421,6 +423,7 @@ def main():
                 fixes_applied.append("event_type→training")
             except Exception as e:
                 print(f"  ✗ ID {aid}: Could not set event type: {e}")
+                had_errors = True
 
         # Fix gear
         if item["needs_gear"]:
@@ -429,13 +432,18 @@ def main():
                 if single["failed"]:
                     gear_errors = [f"{gid}: {err}" for gid, err in single["failed"]]
                     print(f"  ✗ ID {aid}: Could not set gear: {'; '.join(gear_errors)}")
+                    had_errors = True
                 else:
                     fixes_applied.append("gear→gåmølle")
             except Exception as e:
                 print(f"  ✗ ID {aid}: Could not set gear: {e}")
+                had_errors = True
 
-        if fixes_applied:
+        # Only show success if ALL operations succeeded
+        if fixes_applied and not had_errors:
             print(f"  ✓ ID {aid}: {', '.join(fixes_applied)}")
+        elif fixes_applied and had_errors:
+            print(f"  ⚠ ID {aid}: Partial success: {', '.join(fixes_applied)} (but some operations failed)")
 
     print(f"\nFixed {len(activities_to_fix)} activities!")
 

@@ -77,9 +77,14 @@ Optional mapping for Kinomap `Sport="running"` sessions:
 
 Allowed values:
 
-    walking            # default
-    treadmill_running
-    keep               # keep Garmin-imported type
+    walking            # default - map Kinomap running → Garmin walking
+    treadmill_running  # map Kinomap running → Garmin treadmill running
+    keep               # keep Garmin-imported type (no override)
+    imported           # synonym for 'keep' (advanced)
+    none               # synonym for 'keep' (advanced)
+    ""                 # empty string - treated as 'keep'
+
+**Note:** Event type is always set to `training` for Kinomap TCX uploads (use `--race` flag to override).
 
 Set secure permissions:
 
@@ -192,7 +197,8 @@ python3 fix_historical_treadmill_activities.py --apply
 
 This will:
 1. Set activity type to `walking` (if incorrect)
-2. Enforce single gear link to `gåmølle` (treadmill gear UUID from env)
+2. Set event type to `training` (if incorrect - same as Kinomap TCX uploads)
+3. Enforce single gear link to `gåmølle` (treadmill gear UUID from env)
 
 **Note:** The utility searches for activities with name `"Gå på tredemølle"` 
 since **2024-10-04** (the date sport-aware support was added).

@@ -155,6 +155,7 @@ def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str, gear
     keep = str(keep_gear_uuid)
     removed = []
     failed = []
+    add_failed = False
 
     if gear_payload is None:
         payload = api.get_activity_gear(activity_id)
@@ -169,6 +170,7 @@ def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str, gear
             linked.append(keep)
         except Exception as e:
             failed.append((keep, f"{type(e).__name__}: {e}"))
+            add_failed = True
 
     for gid in sorted(set(linked)):
         if gid == keep:
@@ -179,9 +181,9 @@ def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str, gear
         except Exception as e:
             failed.append((gid, f"{type(e).__name__}: {e}"))
 
-    # Only update database if all removal operations succeeded.
-    # This prevents database state from diverging from Garmin API state.
-    if not failed:
+    # Update database if target gear is successfully on the activity (either was already there or added)
+    # Removal failures are tracked but don't prevent DB update since the target gear is correct
+    if keep in linked and not add_failed:
         db = load_db()
         db.setdefault("gear_by_activity", {})[str(activity_id)] = keep
         save_db(db)
