@@ -7,11 +7,14 @@ import sys
 import time
 import hashlib
 import xml.etree.ElementTree as ET
+from contextlib import redirect_stderr
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from garth.exc import GarthHTTPError
 
 from garminconnect import Garmin
+from garminconnect import GarminConnectConnectionError
 from garmin_utils import (
     load_env_file,
     enforce_single_gear,
@@ -71,10 +74,13 @@ if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES:
     )
 
 def activity_exists(api: Garmin, activity_id: int) -> bool:
+    """Check if activity exists, suppressing API error logging for 404s."""
     try:
-        api.get_activity_details(activity_id)
+        # Suppress stderr noise from garminconnect library for expected 404s
+        with redirect_stderr(StringIO()):
+            api.get_activity_details(activity_id)
         return True
-    except GarthHTTPError as e:
+    except (GarthHTTPError, GarminConnectConnectionError) as e:
         # 404 = finnes ikke
         if "404" in str(e):
             return False
@@ -645,11 +651,13 @@ def main():
             print(f"Fant eksisterende aktivitet via matching: {aid}")
 
     # 3) Upload if needed (or forced)
+    uploaded = False
     if aid is None:
         print("Laster opp TCX…")
         try:
             api.upload_activity(str(tcx))
             aid = find_uploaded_activity(api, exp_start_unix, exp_dist, exp_duration, timeout_s=90)
+            uploaded = True
         except Exception as e:
             # Force-upload can legitimately hit Garmin duplicate protection (409)
             if is_conflict_409(e):
@@ -673,8 +681,9 @@ def main():
         save_db(db)
 
     # ---- Fetch summary and patch only if needed ----
-    # Reuse cached acts if available, otherwise fetch (issue #9 optimization)
-    if acts is None:
+    # If we just uploaded, acts cache is stale - refresh it
+    # Otherwise reuse cached acts if available (issue #9 optimization)
+    if uploaded or acts is None:
         acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
     summary = next((x for x in acts if x.get("activityId") == aid), None)
     if not summary:
@@ -724,7 +733,9 @@ def main():
     # ---- Sanity ----
     if args.sanity:
         time.sleep(2)
-        # Reuse cached acts and gear_payload if available (issue #5 and #9 optimizations)
+        # Refresh acts after patching to show updated type/event in sanity check
+        acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
+        # Reuse gear_payload if available (issue #5 optimization)
         sanity_print_match(api, aid, exp_start_unix, exp_dist, exp_duration, desired_gear_uuid, acts=acts, cached_gear_payload=gear_payload)
 
     print(f"OK: activityId={aid}")
