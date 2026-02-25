@@ -74,17 +74,20 @@ if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES:
     )
 
 def activity_exists(api: Garmin, activity_id: int) -> bool:
-    """Check if activity exists, suppressing API error logging for 404s."""
+    """Check if activity exists; suppress expected 404 noise only."""
+    stderr_buffer = StringIO()
     try:
-        # Suppress stderr noise from garminconnect library for expected 404s
-        with redirect_stderr(StringIO()):
+        with redirect_stderr(stderr_buffer):
             api.get_activity_details(activity_id)
         return True
     except (GarthHTTPError, GarminConnectConnectionError) as e:
         # 404 = finnes ikke
         if "404" in str(e):
             return False
-        # Andre HTTP-feil → re-raise
+        # Andre HTTP-feil: re-emit captured diagnostics before re-raise
+        err_output = stderr_buffer.getvalue()
+        if err_output:
+            print(err_output, file=sys.stderr, end="")
         raise
 
 def load_db() -> dict:
