@@ -4,9 +4,10 @@ Fix historical "Gå på tredemølle" activities on Garmin Connect.
 
 This script:
 1. Finds all activities named "Gå på tredemølle" since 2024-10-04
-2. Lists them with current type and gear status
+2. Lists them with current type, event type, and gear status
 3. Optionally fixes them (--apply flag):
    - Sets activity type to 'walking'
+   - Sets event type to 'training'
    - Attaches TREADMILL_GEAR_UUID
    - Enforces single-gear policy
 
@@ -54,6 +55,10 @@ if not DEFAULT_TREADMILL_GEAR_UUID:
         "Set TREADMILL_GEAR_UUID or GEAR_UUID in .config/kinomap_to_garmin.env"
     )
 
+# Event Type IDs (from reverse-engineering API responses)
+EVENT_TYPE_TRAINING = 4
+EVENT_TYPE_RACE = 1
+
 ACTIVITY_PAGE_SIZE = 200
 
 def _extract_activity_gear_uuids(payload) -> list[str]:
@@ -77,28 +82,53 @@ def _extract_activity_gear_uuids(payload) -> list[str]:
             uuids.append(str(gid))
     return uuids
 
-def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str) -> dict:
+def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str, verbose: bool = False) -> dict:
     """Ensure exactly one gear link remains on activity."""
     keep = str(keep_gear_uuid)
     removed = []
     failed = []
 
+    if verbose:
+        print(f"    [DEBUG] Fetching gear for activity {activity_id}...")
+    
     payload = api.get_activity_gear(activity_id)
     linked = _extract_activity_gear_uuids(payload)
+    
+    if verbose:
+        print(f"    [DEBUG] Current gear UUIDs: {linked}")
+        print(f"    [DEBUG] Target gear UUID: {keep}")
 
     if keep not in linked:
-        api.add_gear_to_activity(keep, activity_id)
-        linked.append(keep)
+        if verbose:
+            print(f"    [DEBUG] Attempting to add gear {keep}...")
+        try:
+            result = api.add_gear_to_activity(keep, activity_id)
+            linked.append(keep)
+            if verbose:
+                print(f"    [DEBUG] Add gear succeeded: {result}")
+        except Exception as e:
+            if verbose:
+                print(f"    [DEBUG] Add gear FAILED: {type(e).__name__}: {e}")
+            failed.append((keep, f"{type(e).__name__}: {e}"))
 
     for gid in sorted(set(linked)):
         if gid == keep:
             continue
+        if verbose:
+            print(f"    [DEBUG] Attempting to remove gear {gid}...")
         try:
             api.remove_gear_from_activity(gid, activity_id)
             removed.append(gid)
+            if verbose:
+                print(f"    [DEBUG] Remove gear succeeded")
         except Exception as e:
+            if verbose:
+                print(f"    [DEBUG] Remove gear FAILED: {type(e).__name__}: {e}")
             failed.append((gid, f"{type(e).__name__}: {e}"))
 
+    if verbose:
+        print(f"    [DEBUG] Result: removed={removed}, failed={failed}")
+    
     return {
         "kept": keep,
         "removed": removed,
@@ -123,6 +153,23 @@ def set_activity_type(api: Garmin, activity_id: int, type_key: str = "walking"):
     }
     return api.garth.put("connectapi", url, json=payload, api=True)
 
+def set_event_type(api: Garmin, activity_id: int, type_key: str = "training"):
+    """Set event type (training/race) on Garmin Connect."""
+    type_map = {
+        "training": {"typeId": EVENT_TYPE_TRAINING, "typeKey": "training", "sortOrder": 7},
+        "race": {"typeId": EVENT_TYPE_RACE, "typeKey": "race", "sortOrder": 5},
+    }
+
+    if type_key not in type_map:
+        raise ValueError(f"Unknown event type_key: {type_key}")
+
+    url = f"{api.garmin_connect_activity}/{activity_id}"
+    payload = {
+        "activityId": activity_id,
+        "eventTypeDTO": type_map[type_key],
+    }
+    return api.garth.put("connectapi", url, json=payload, api=True)
+
 # ============================================================================
 # Main logic
 # ============================================================================
@@ -133,6 +180,14 @@ def get_activity_type_key(activity: dict) -> str:
         (activity.get("activityType") or {}).get("typeKey")
         or (activity.get("activityTypeDTO") or {}).get("typeKey")
         or activity.get("activityTypeKey")
+        or "unknown"
+    )
+
+def get_event_type_key(activity: dict) -> str:
+    """Extract event type key from activity summary."""
+    return (
+        (activity.get("eventType") or {}).get("typeKey")
+        or (activity.get("eventTypeDTO") or {}).get("typeKey")
         or "unknown"
     )
 
@@ -207,6 +262,17 @@ def main():
         action="store_true",
         help="Apply fixes. Without this, only dry-run (list).",
     )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit --apply to N activities (for testing). Default: apply all.",
+    )
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print debug info for API calls.",
+    )
     args = ap.parse_args()
 
     # Load credentials
@@ -238,6 +304,7 @@ def main():
         name = act.get("activityName")
         start_time = act.get("startTimeGMT", "unknown")
         current_type = get_activity_type_key(act)
+        current_event_type = get_event_type_key(act)
         duration = act.get("duration", 0)
 
         # Check gear
@@ -248,16 +315,19 @@ def main():
             gear_uuids = []
 
         needs_type_fix = current_type != "walking"
+        needs_event_type_fix = current_event_type != "training"
         needs_gear_fix = DEFAULT_TREADMILL_GEAR_UUID not in gear_uuids
 
-        if needs_type_fix or needs_gear_fix:
+        if needs_type_fix or needs_event_type_fix or needs_gear_fix:
             need_fixing.append({
                 "id": aid,
                 "date": start_time,
                 "current_type": current_type,
+                "current_event_type": current_event_type,
                 "gear_uuids": gear_uuids,
                 "duration": duration,
                 "needs_type": needs_type_fix,
+                "needs_event_type": needs_event_type_fix,
                 "needs_gear": needs_gear_fix,
             })
         else:
@@ -309,6 +379,8 @@ def main():
             fixes = []
             if item["needs_type"]:
                 fixes.append(f"type ({item['current_type']} → walking)")
+            if item["needs_event_type"]:
+                fixes.append(f"event type ({item['current_event_type']} → training)")
             if item["needs_gear"]:
                 fixes.append("gear (add gåmølle)")
             print(f"  - ID {item['id']}: {', '.join(fixes)}")
@@ -323,9 +395,14 @@ def main():
         print("\nNothing to fix!")
         return
 
-    print(f"\nApplying fixes to {len(need_fixing)} activities…\n")
+    activities_to_fix = need_fixing
+    if args.limit is not None and args.limit > 0:
+        activities_to_fix = need_fixing[:args.limit]
+        print(f"\nApplying fixes to {len(activities_to_fix)} of {len(need_fixing)} activities (--limit {args.limit})…\n")
+    else:
+        print(f"\nApplying fixes to {len(need_fixing)} activities…\n")
 
-    for item in need_fixing:
+    for item in activities_to_fix:
         aid = item["id"]
         fixes_applied = []
 
@@ -337,11 +414,23 @@ def main():
             except Exception as e:
                 print(f"  ✗ ID {aid}: Could not set type: {e}")
 
+        # Fix event type
+        if item["needs_event_type"]:
+            try:
+                set_event_type(api, aid, "training")
+                fixes_applied.append("event_type→training")
+            except Exception as e:
+                print(f"  ✗ ID {aid}: Could not set event type: {e}")
+
         # Fix gear
         if item["needs_gear"]:
             try:
-                enforce_single_gear(api, aid, DEFAULT_TREADMILL_GEAR_UUID)
-                fixes_applied.append("gear→gåmølle")
+                single = enforce_single_gear(api, aid, DEFAULT_TREADMILL_GEAR_UUID, verbose=args.verbose)
+                if single["failed"]:
+                    gear_errors = [f"{gid}: {err}" for gid, err in single["failed"]]
+                    print(f"  ✗ ID {aid}: Could not set gear: {'; '.join(gear_errors)}")
+                else:
+                    fixes_applied.append("gear→gåmølle")
             except Exception as e:
                 print(f"  ✗ ID {aid}: Could not set gear: {e}")
 
