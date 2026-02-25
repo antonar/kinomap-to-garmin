@@ -13,10 +13,12 @@ Designed for personal use, but structured and documented for clarity.
 -   Preserves all sensor data (HR, power, cadence, calories, etc.)
 -   Deterministic duplicate detection (SHA256 + metadata matching)
 -   Automatically sets:
-    -   Activity type → `Indoor Rowing`
+    -   Activity type → `Indoor Rowing` for `Sport="rowing"`
+    -   Activity type → `walking` for `Sport="running"` (Kinomap treadmill sessions)
     -   Event type → `training` (default) or `race`
-    -   Title (derived from filename)
+    -   Title (derived from filename, sport-aware prefix)
     -   Gear (idempotent)
+    -   Enforces one gear per activity (removes stale extra gear links)
 -   Atomic local state handling
 -   Safe handling of Garmin API edge cases (409, 404, network errors)
 
@@ -57,6 +59,33 @@ With:
     GARMIN_EMAIL=your@email.com
     GARMIN_PASSWORD=yourpassword
 
+Optional title prefixes:
+
+    TITLE_PREFIX=Romaskin – 
+    TREADMILL_TITLE_PREFIX=Gåmølle - 
+
+Optional gear UUIDs per sport:
+
+    ROWING_GEAR_UUID=<uuid-for-romaskin>
+    TREADMILL_GEAR_UUID=<uuid-for-gåmølle>
+    # fallback for both if per-sport values are not set:
+    GEAR_UUID=<legacy-default>
+
+Optional mapping for Kinomap `Sport="running"` sessions:
+
+    RUNNING_ACTIVITY_TYPE=walking
+
+Allowed values:
+
+    walking            # default - map Kinomap running → Garmin walking
+    treadmill_running  # map Kinomap running → Garmin treadmill running
+    keep               # keep Garmin-imported type (no override)
+    imported           # synonym for 'keep' (advanced)
+    none               # synonym for 'keep' (advanced)
+    ""                 # empty string - treated as 'keep'
+
+**Note:** Event type is always set to `training` for Kinomap TCX uploads (use `--race` flag to override).
+
 Set secure permissions:
 
 ``` bash
@@ -93,8 +122,86 @@ Pinned direct dependencies:
   ------------------ ------------------------------------------------
   `--race`           Set event type to `race` (default: `training`)
   `--sanity`         Print TCX vs Garmin summary comparison
+  `--show-config`    Print resolved config (type/title/gear) before run
   `--force-upload`   Force upload even if SHA match exists
   `--dry-run`        No upload or patching --- only matching logic
+
+### Recommended commands
+
+Treadmill / walking session:
+
+``` bash
+./run_kinomap.sh "York City Walls part 2_2--21924602.tcx" --show-config --sanity
+```
+
+Rowing session:
+
+``` bash
+./run_kinomap.sh "<rowing-file>.tcx" --show-config --sanity
+```
+
+Race event type (optional):
+
+``` bash
+./run_kinomap.sh "<file>.tcx" --race --show-config --sanity
+```
+
+### Batch / loop over many files
+
+Dry-run all TCX files first:
+
+``` bash
+for f in *.tcx; do
+    ./run_kinomap.sh "$f" --show-config --dry-run
+done
+```
+
+Upload all TCX files with sanity output:
+
+``` bash
+for f in *.tcx; do
+    ./run_kinomap.sh "$f" --show-config --sanity
+done
+```
+
+------------------------------------------------------------------------
+
+## Historical Activity Cleanup
+
+For existing Kinomap treadmill activities uploaded before sport-aware support was added,
+use the historical cleanup utility:
+
+```bash
+python3 fix_historical_treadmill_activities.py
+```
+
+### Dry-run mode (default)
+
+Lists all historical treadmill activities needing fixes:
+
+```bash
+python3 fix_historical_treadmill_activities.py
+```
+
+Output shows:
+- Activity ID, date, current type, gear status, duration
+- Which activities need type fixes vs gear-only fixes
+
+### Apply fixes
+
+Automatically correct all historical activities:
+
+```bash
+python3 fix_historical_treadmill_activities.py --apply
+```
+
+This will:
+1. Set activity type to `walking` (if incorrect)
+2. Set event type to `training` (if incorrect - same as Kinomap TCX uploads)
+3. Enforce single gear link to `gåmølle` (treadmill gear UUID from env)
+
+**Note:** The utility searches for activities with name `"Gå på tredemølle"` 
+since **2024-10-04** (the date sport-aware support was added).
 
 ------------------------------------------------------------------------
 

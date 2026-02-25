@@ -2,3 +2,5 @@
 .config/
 .kinomap_garmin.json
 *.tcx
+__pycache__/
+*.pyc
