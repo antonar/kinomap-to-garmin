@@ -437,7 +437,7 @@ def main():
         if fixes_applied:
             print(f"  ✓ ID {aid}: {', '.join(fixes_applied)}")
 
-    print(f"\nFixed {len(need_fixing)} activities!")
+    print(f"\nFixed {len(activities_to_fix)} activities!")
 
 if __name__ == "__main__":
     main()

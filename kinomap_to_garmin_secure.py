@@ -60,7 +60,7 @@ DEFAULT_RUNNING_ACTIVITY_TYPE = (
     if RUNNING_ACTIVITY_TYPE_RAW in ALLOWED_RUNNING_TYPES
     else "walking"
 )
-if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES and RUNNING_ACTIVITY_TYPE_RAW != "walking":
+if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES:
     print(
         f"NB: Ugyldig RUNNING_ACTIVITY_TYPE='{RUNNING_ACTIVITY_TYPE_RAW}'. Bruker 'walking' som default.",
         file=sys.stderr,
@@ -241,7 +241,7 @@ def resolve_desired_activity_type(tcx_sport: str, creator_name: str) -> str | No
 
     # Kinomap tredemølleøkter eksporteres typisk som Sport="running"
     # (ofte med Creator=KinomapVirtualRun).
-    if sport == "running" or "kinomapvirtualrun" in creator:
+    if sport == "running" or creator == "kinomapvirtualrun":
         if DEFAULT_RUNNING_ACTIVITY_TYPE in {"", "keep", "imported", "none"}:
             return None
         # DEFAULT_RUNNING_ACTIVITY_TYPE is pre-validated at module level,
@@ -253,14 +253,14 @@ def resolve_desired_activity_type(tcx_sport: str, creator_name: str) -> str | No
 def resolve_title_prefix(tcx_sport: str, creator_name: str = "") -> str:
     sport = (tcx_sport or "").strip().lower()
     creator = (creator_name or "").strip().lower()
-    if sport == "running" or "kinomapvirtualrun" in creator:
+    if sport == "running" or creator == "kinomapvirtualrun":
         return DEFAULT_TREADMILL_PREFIX
     return DEFAULT_ROWING_PREFIX
 
 def resolve_gear_uuid(tcx_sport: str, creator_name: str = "") -> str:
     sport = (tcx_sport or "").strip().lower()
     creator = (creator_name or "").strip().lower()
-    if sport == "running" or "kinomapvirtualrun" in creator:
+    if sport == "running" or creator == "kinomapvirtualrun":
         return DEFAULT_TREADMILL_GEAR_UUID
     return DEFAULT_ROWING_GEAR_UUID
 
@@ -829,11 +829,11 @@ def main():
 
     # ---- Gear (idempotent via lokal cache + single-gear policy) ----
     try:
-        # Cache gear payload for reuse in enforce_single_gear and sanity (issue #5 optimization)
-        gear_payload = api.get_activity_gear(aid)
-        
         gear_status = ensure_gear_cached(api, aid, desired_gear_uuid)
         print("Gear: allerede satt (cache)" if gear_status == "already" else "Gear: lagt til")
+        
+        # Fetch gear payload AFTER ensure_gear_cached to avoid stale data (issue #6 optimization)
+        gear_payload = api.get_activity_gear(aid)
 
         single = enforce_single_gear(api, aid, desired_gear_uuid, gear_payload=gear_payload)
         if single["removed"]:
