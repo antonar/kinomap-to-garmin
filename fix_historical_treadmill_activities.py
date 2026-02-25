@@ -22,24 +22,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from garminconnect import Garmin
+from garmin_utils import (
+    load_env_file,
+    _extract_activity_gear_uuids,
+    enforce_single_gear,
+    set_activity_type,
+    set_event_type,
+    EVENT_TYPE_TRAINING,
+    EVENT_TYPE_RACE,
+    ACTIVITY_PAGE_SIZE,
+)
 
 # ============================================================================
-# Shared utilities (mirrored from kinomap_to_garmin_secure.py)
+# Configuration and setup
 # ============================================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-
-def load_env_file(path: Path) -> None:
-    """Load simple KEY=VALUE lines into environment (if not already set)."""
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        val = v.strip().strip('"').strip("'")
-        os.environ.setdefault(k.strip(), val)
 
 # Load local env early
 load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
@@ -54,121 +52,6 @@ if not DEFAULT_TREADMILL_GEAR_UUID:
         "ERROR: Gear UUID for treadmill is empty. "
         "Set TREADMILL_GEAR_UUID or GEAR_UUID in .config/kinomap_to_garmin.env"
     )
-
-# Event Type IDs (from reverse-engineering API responses)
-EVENT_TYPE_TRAINING = 4
-EVENT_TYPE_RACE = 1
-
-ACTIVITY_PAGE_SIZE = 200
-
-def _extract_activity_gear_uuids(payload) -> list[str]:
-    """Extract gear UUIDs from API response."""
-    items = []
-    if isinstance(payload, list):
-        items = payload
-    elif isinstance(payload, dict):
-        for key in ("gear", "gearDTOs", "activityGear", "items"):
-            v = payload.get(key)
-            if isinstance(v, list):
-                items = v
-                break
-
-    uuids = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        gid = item.get("uuid") or item.get("gearUUID") or item.get("gearUuid")
-        if gid:
-            uuids.append(str(gid))
-    return uuids
-
-def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str, verbose: bool = False) -> dict:
-    """Ensure exactly one gear link remains on activity."""
-    keep = str(keep_gear_uuid)
-    removed = []
-    failed = []
-
-    if verbose:
-        print(f"    [DEBUG] Fetching gear for activity {activity_id}...")
-    
-    payload = api.get_activity_gear(activity_id)
-    linked = _extract_activity_gear_uuids(payload)
-    
-    if verbose:
-        print(f"    [DEBUG] Current gear UUIDs: {linked}")
-        print(f"    [DEBUG] Target gear UUID: {keep}")
-
-    if keep not in linked:
-        if verbose:
-            print(f"    [DEBUG] Attempting to add gear {keep}...")
-        try:
-            result = api.add_gear_to_activity(keep, activity_id)
-            linked.append(keep)
-            if verbose:
-                print(f"    [DEBUG] Add gear succeeded: {result}")
-        except Exception as e:
-            if verbose:
-                print(f"    [DEBUG] Add gear FAILED: {type(e).__name__}: {e}")
-            failed.append((keep, f"{type(e).__name__}: {e}"))
-
-    for gid in sorted(set(linked)):
-        if gid == keep:
-            continue
-        if verbose:
-            print(f"    [DEBUG] Attempting to remove gear {gid}...")
-        try:
-            api.remove_gear_from_activity(gid, activity_id)
-            removed.append(gid)
-            if verbose:
-                print(f"    [DEBUG] Remove gear succeeded")
-        except Exception as e:
-            if verbose:
-                print(f"    [DEBUG] Remove gear FAILED: {type(e).__name__}: {e}")
-            failed.append((gid, f"{type(e).__name__}: {e}"))
-
-    if verbose:
-        print(f"    [DEBUG] Result: removed={removed}, failed={failed}")
-    
-    return {
-        "kept": keep,
-        "removed": removed,
-        "failed": failed,
-    }
-
-def set_activity_type(api: Garmin, activity_id: int, type_key: str = "walking"):
-    """Set activity type on Garmin Connect."""
-    type_map = {
-        "indoor_rowing": {"typeId": 32, "typeKey": "indoor_rowing", "parentTypeId": 29},
-        "walking": {"typeId": 9, "typeKey": "walking", "parentTypeId": 17},
-        "treadmill_running": {"typeId": 18, "typeKey": "treadmill_running", "parentTypeId": 1},
-    }
-
-    if type_key not in type_map:
-        raise ValueError(f"Unknown type_key: {type_key}")
-
-    url = f"{api.garmin_connect_activity}/{activity_id}"
-    payload = {
-        "activityId": activity_id,
-        "activityTypeDTO": type_map[type_key],
-    }
-    return api.garth.put("connectapi", url, json=payload, api=True)
-
-def set_event_type(api: Garmin, activity_id: int, type_key: str = "training"):
-    """Set event type (training/race) on Garmin Connect."""
-    type_map = {
-        "training": {"typeId": EVENT_TYPE_TRAINING, "typeKey": "training", "sortOrder": 7},
-        "race": {"typeId": EVENT_TYPE_RACE, "typeKey": "race", "sortOrder": 5},
-    }
-
-    if type_key not in type_map:
-        raise ValueError(f"Unknown event type_key: {type_key}")
-
-    url = f"{api.garmin_connect_activity}/{activity_id}"
-    payload = {
-        "activityId": activity_id,
-        "eventTypeDTO": type_map[type_key],
-    }
-    return api.garth.put("connectapi", url, json=payload, api=True)
 
 # ============================================================================
 # Main logic

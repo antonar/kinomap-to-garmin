@@ -6,13 +6,30 @@ import os
 import sys
 import time
 import hashlib
-import json
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from garth.exc import GarthHTTPError
 
 from garminconnect import Garmin
+from garmin_utils import (
+    load_env_file,
+    _extract_activity_gear_uuids,
+    enforce_single_gear,
+    set_activity_type,
+    set_event_type,
+    load_db as utils_load_db,
+    save_db as utils_save_db,
+    ACTIVITY_TYPE_INDOOR_ROWING,
+    ACTIVITY_PARENT_TYPE_INDOOR_ROWING,
+    ACTIVITY_TYPE_WALKING,
+    ACTIVITY_PARENT_TYPE_WALKING,
+    ACTIVITY_TYPE_TREADMILL_RUNNING,
+    ACTIVITY_PARENT_TYPE_TREADMILL_RUNNING,
+    EVENT_TYPE_TRAINING,
+    EVENT_TYPE_RACE,
+    ACTIVITY_PAGE_SIZE,
+)
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
@@ -66,20 +83,10 @@ if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES:
         file=sys.stderr,
     )
 
-# Garmin Connect Activity Type IDs (from reverse-engineering API responses)
-# These are used when setting activity types via PUT request to /activity/{id}
-ACTIVITY_TYPE_INDOOR_ROWING = 32
-ACTIVITY_PARENT_TYPE_INDOOR_ROWING = 29
-ACTIVITY_TYPE_WALKING = 9
-ACTIVITY_PARENT_TYPE_WALKING = 17
-ACTIVITY_TYPE_TREADMILL_RUNNING = 18
-ACTIVITY_PARENT_TYPE_TREADMILL_RUNNING = 1
+# Re-export constants from garmin_utils for backwards compatibility
+# (in case any other code references these from this module)
 
-# Garmin Connect Event Type IDs (training vs race)
-EVENT_TYPE_TRAINING = 4
-EVENT_TYPE_RACE = 1
-
-ACTIVITY_PAGE_SIZE = 200
+ACTIVITY_PAGE_SIZE = ACTIVITY_PAGE_SIZE  # Already imported
 
 def activity_exists(api: Garmin, activity_id: int) -> bool:
     try:
@@ -93,23 +100,12 @@ def activity_exists(api: Garmin, activity_id: int) -> bool:
         raise
 
 def load_db() -> dict:
-    if not DB_PATH.exists():
-        return {"hash_to_activity": {}, "gear_by_activity": {}}
-
-    try:
-        d = json.loads(DB_PATH.read_text(encoding="utf-8"))
-        if not isinstance(d, dict):
-            return {"hash_to_activity": {}, "gear_by_activity": {}}
-        d.setdefault("hash_to_activity", {})
-        d.setdefault("gear_by_activity", {})
-        return d
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return {"hash_to_activity": {}, "gear_by_activity": {}}
+    """Load DB using utility function but with hardcoded path."""
+    return utils_load_db(DB_PATH)
 
 def save_db(d: dict) -> None:
-    tmp = DB_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(DB_PATH)
+    """Save DB using utility function but with hardcoded path."""
+    utils_save_db(DB_PATH, d)
 
 def ensure_gear_cached(api: Garmin, activity_id: int, gear_uuid: str) -> str:
     db = load_db()
@@ -123,76 +119,6 @@ def ensure_gear_cached(api: Garmin, activity_id: int, gear_uuid: str) -> str:
     gear_map[key] = str(gear_uuid)
     save_db(db)
     return "added"
-
-def _extract_activity_gear_uuids(payload) -> list[str]:
-    items = []
-    if isinstance(payload, list):
-        items = payload
-    elif isinstance(payload, dict):
-        for key in ("gear", "gearDTOs", "activityGear", "items"):
-            v = payload.get(key)
-            if isinstance(v, list):
-                items = v
-                break
-
-    uuids = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        gid = item.get("uuid") or item.get("gearUUID") or item.get("gearUuid")
-        if gid:
-            uuids.append(str(gid))
-    return uuids
-
-def enforce_single_gear(api: Garmin, activity_id: int, keep_gear_uuid: str, gear_payload: dict | list | None = None) -> dict:
-    """
-    Ensure exactly one gear link remains on activity: keep_gear_uuid.
-    Best effort: does not raise on individual unlink failures.
-    
-    If gear_payload is provided, use it (from cache). Otherwise fetch from API.
-    This allows callers to cache and reuse get_activity_gear() results.
-    """
-    keep = str(keep_gear_uuid)
-    removed = []
-    failed = []
-    add_failed = False
-
-    if gear_payload is None:
-        payload = api.get_activity_gear(activity_id)
-    else:
-        payload = gear_payload
-    
-    linked = _extract_activity_gear_uuids(payload)
-
-    if keep not in linked:
-        try:
-            api.add_gear_to_activity(keep, activity_id)
-            linked.append(keep)
-        except Exception as e:
-            failed.append((keep, f"{type(e).__name__}: {e}"))
-            add_failed = True
-
-    for gid in sorted(set(linked)):
-        if gid == keep:
-            continue
-        try:
-            api.remove_gear_from_activity(gid, activity_id)
-            removed.append(gid)
-        except Exception as e:
-            failed.append((gid, f"{type(e).__name__}: {e}"))
-
-    # Update database if target gear is successfully on the activity (either was already there or added)
-    # Removal failures are tracked but don't prevent DB update since the target gear is correct
-    if keep in linked and not add_failed:
-        db = load_db()
-        db.setdefault("gear_by_activity", {})[str(activity_id)] = keep
-        save_db(db)
-
-    return {
-        "kept": keep,
-        "removed": removed,
-        "failed": failed,
-    }
 
 def parse_tcx_metadata(tcx: Path):
     ns = {"tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
@@ -289,24 +215,6 @@ def print_run_config(
     print(f"- force_upload: {str(force_upload).lower()}")
     print(f"- dry_run: {str(dry_run).lower()}")
 
-def set_event_type(api: Garmin, activity_id: int, type_key: str):
-    type_map = {
-        "training": {"typeId": EVENT_TYPE_TRAINING, "typeKey": "training", "sortOrder": 7},
-        "race": {"typeId": EVENT_TYPE_RACE, "typeKey": "race", "sortOrder": 5},
-    }
-
-    if type_key not in type_map:
-        raise ValueError(f"Unknown event type key: {type_key}")
-
-    url = f"{api.garmin_connect_activity}/{activity_id}"
-
-    payload = {
-        "activityId": activity_id,
-        "eventTypeDTO": type_map[type_key],
-    }
-
-    return api.garth.put("connectapi", url, json=payload, api=True)
-
 def parse_start_gmt(s: str) -> int:
     # "YYYY-MM-DD HH:MM:SS"
     dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -370,25 +278,6 @@ def find_uploaded_activity(
         f"Fant ikke entydig match for opplastet aktivitet innen {timeout_s}s. "
         f"Last matches: {last_seen}"
     )
-
-def set_activity_type(api: Garmin, activity_id: int, type_key: str = "indoor_rowing"):
-    type_map = {
-        "indoor_rowing": {"typeId": ACTIVITY_TYPE_INDOOR_ROWING, "typeKey": "indoor_rowing", "parentTypeId": ACTIVITY_PARENT_TYPE_INDOOR_ROWING},
-        "walking": {"typeId": ACTIVITY_TYPE_WALKING, "typeKey": "walking", "parentTypeId": ACTIVITY_PARENT_TYPE_WALKING},
-        "treadmill_running": {"typeId": ACTIVITY_TYPE_TREADMILL_RUNNING, "typeKey": "treadmill_running", "parentTypeId": ACTIVITY_PARENT_TYPE_TREADMILL_RUNNING},
-    }
-
-    if type_key not in type_map:
-        raise ValueError(f"Ukjent/støttes ikke type_key='{type_key}'")
-
-    url = f"{api.garmin_connect_activity}/{activity_id}"
-
-    payload = {
-        "activityId": activity_id,
-        "activityTypeDTO": type_map[type_key],
-    }
-
-    return api.garth.put("connectapi", url, json=payload, api=True)
 
 def sanity_print_match(
     api: Garmin,
@@ -837,7 +726,7 @@ def main():
         # Fetch gear payload AFTER ensure_gear_cached to avoid stale data (issue #6 optimization)
         gear_payload = api.get_activity_gear(aid)
 
-        single = enforce_single_gear(api, aid, desired_gear_uuid, gear_payload=gear_payload)
+        single = enforce_single_gear(api, aid, desired_gear_uuid, gear_payload=gear_payload, db_path=DB_PATH)
         if single["removed"]:
             print(f"Gear: fjernet ekstra koblinger ({', '.join(single['removed'])})")
         if single["failed"]:
