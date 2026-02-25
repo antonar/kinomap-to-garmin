@@ -99,7 +99,6 @@ def enforce_single_gear(
     keep = str(keep_gear_uuid)
     removed = []
     failed = []
-    add_failed = False
 
     if verbose:
         print(f"    [DEBUG] Fetching gear for activity {activity_id}...")
@@ -127,8 +126,14 @@ def enforce_single_gear(
             if verbose:
                 print(f"    [DEBUG] Add gear FAILED: {type(e).__name__}: {e}")
             failed.append((keep, f"{type(e).__name__}: {e}"))
-            add_failed = True
+            # Conservative: if we can't add the target gear, don't remove anything
+            return {
+                "kept": None,
+                "removed": [],
+                "failed": failed,
+            }
 
+    # Only proceed with removal if target gear is confirmed present
     for gid in sorted(set(linked)):
         if gid == keep:
             continue
@@ -146,7 +151,7 @@ def enforce_single_gear(
 
     # Update database if target gear is successfully on the activity and DB path provided
     # Removal failures are tracked but don't prevent DB update since the target gear is correct
-    if db_path and keep in linked and not add_failed:
+    if db_path and keep in linked:
         db = load_db(db_path)
         db.setdefault("gear_by_activity", {})[str(activity_id)] = keep
         save_db(db_path, db)

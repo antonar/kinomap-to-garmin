@@ -35,18 +35,6 @@ from garmin_utils import (
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / ".kinomap_garmin.json"
 
-def load_env_file(path: Path) -> None:
-    """Load simple KEY=VALUE lines into environment (if not already set)."""
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        val = v.strip().strip('"').strip("'")
-        os.environ.setdefault(k.strip(), val)
-
 # Load local env early so module defaults below can see .config values.
 load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
 
