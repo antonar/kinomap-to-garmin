@@ -7,6 +7,39 @@ Designed for personal use, but structured and documented for clarity.
 
 ------------------------------------------------------------------------
 
+## ⚡ Quick Start
+
+1) Create a credentials file:
+
+    .config/kinomap_to_garmin.env
+
+with at least:
+
+    GARMIN_EMAIL=your@email.com
+    GARMIN_PASSWORD=yourpassword
+
+2) Run a Kinomap upload (the wrapper creates `.venv` and installs requirements automatically):
+
+``` bash
+./run_kinomap.sh "tcx/<file>.tcx" --show-config --sanity
+```
+
+(`tcx/` is recommended for a tidy project root, but any file path works.)
+
+3) Run the historical fix if needed:
+
+``` bash
+./run_historical.sh --apply
+```
+
+4) Run any script via the generic wrapper:
+
+``` bash
+./run_in_venv.sh <script.py> [args]
+```
+
+------------------------------------------------------------------------
+
 ## ✨ Features
 
 -   Uploads original **TCX** files (no FIT rebuilding)
@@ -31,8 +64,11 @@ Designed for personal use, but structured and documented for clarity.
     │   └── kinomap_to_garmin.env
     ├── .kinomap_garmin.json
     ├── kinomap_to_garmin_secure.py
+    ├── run_in_venv.sh
+    ├── run_historical.sh
     ├── run_kinomap.sh
     ├── requirements.txt
+    ├── tcx/                      # optional, recommended for storing TCX files
     └── .venv/
 
 ------------------------------------------------------------------------
@@ -84,6 +120,15 @@ Allowed values:
     none               # synonym for 'keep' (advanced)
     ""                 # empty string - treated as 'keep'
 
+Optional historical cleanup filter (used by `run_historical.sh` / historical script):
+
+    HISTORICAL_ACTIVITY_NAME=Gå på tredemølle
+    HISTORICAL_SINCE_DATE=2024-10-04
+
+Notes:
+- `HISTORICAL_ACTIVITY_NAME` should match the exact Garmin activity title you want to target.
+- `HISTORICAL_SINCE_DATE` must be in `YYYY-MM-DD` format.
+
 **Note:** Event type is always set to `training` for Kinomap TCX uploads (use `--race` flag to override).
 
 Set secure permissions:
@@ -96,7 +141,7 @@ Credentials are loaded automatically at runtime.
 
 ------------------------------------------------------------------------
 
-### 3️⃣ Install dependencies 📦
+### 3️⃣ (Optional) Install dependencies manually 📦
 
 ``` bash
 python3 -m venv .venv
@@ -110,11 +155,27 @@ Pinned direct dependencies:
 
 ------------------------------------------------------------------------
 
-## 🚀 Usage
+## 🚀 Usage (Reference)
+
+General wrapper for all Python scripts in the project:
 
 ``` bash
-./run_kinomap.sh <file.tcx> [options]
+./run_in_venv.sh <script.py> [args]
 ```
+
+Alias for the historical script:
+
+``` bash
+./run_historical.sh [--apply] [--limit N] [--verbose]
+```
+
+Kinomap uploader (backwards-compatible alias):
+
+``` bash
+./run_kinomap.sh tcx/<file.tcx> [options]
+```
+
+You can also pass a TCX file from any other location.
 
 ### Options
 
@@ -131,19 +192,19 @@ Pinned direct dependencies:
 Treadmill / walking session:
 
 ``` bash
-./run_kinomap.sh "York City Walls part 2_2--21924602.tcx" --show-config --sanity
+./run_kinomap.sh "tcx/York City Walls part 2_2--21924602.tcx" --show-config --sanity
 ```
 
 Rowing session:
 
 ``` bash
-./run_kinomap.sh "<rowing-file>.tcx" --show-config --sanity
+./run_kinomap.sh "tcx/<rowing-file>.tcx" --show-config --sanity
 ```
 
 Race event type (optional):
 
 ``` bash
-./run_kinomap.sh "<file>.tcx" --race --show-config --sanity
+./run_kinomap.sh "tcx/<file>.tcx" --race --show-config --sanity
 ```
 
 ### Batch / loop over many files
@@ -151,7 +212,15 @@ Race event type (optional):
 Dry-run all TCX files first:
 
 ``` bash
-for f in *.tcx; do
+for f in tcx/*.tcx; do
+    ./run_kinomap.sh "$f" --show-config --dry-run
+done
+```
+
+If your files are elsewhere:
+
+``` bash
+for f in /path/to/files/*.tcx; do
     ./run_kinomap.sh "$f" --show-config --dry-run
 done
 ```
@@ -159,10 +228,22 @@ done
 Upload all TCX files with sanity output:
 
 ``` bash
-for f in *.tcx; do
+for f in tcx/*.tcx; do
     ./run_kinomap.sh "$f" --show-config --sanity
 done
 ```
+
+------------------------------------------------------------------------
+
+## ⚠️ Gotchas / Troubleshooting
+
+| Error message / symptom | Likely cause | What to do |
+| --- | --- | --- |
+| `No activities found.` (historical script) | No activity matches both `HISTORICAL_ACTIVITY_NAME` and `HISTORICAL_SINCE_DATE`. | Verify exact activity title in Garmin Connect and widen/adjust `HISTORICAL_SINCE_DATE`. |
+| `ERROR: HISTORICAL_SINCE_DATE must be YYYY-MM-DD` | Invalid date format in env configuration. | Set `HISTORICAL_SINCE_DATE` to a valid value such as `2024-10-04`. |
+| `Set GARMIN_EMAIL and GARMIN_PASSWORD.` | Missing credentials in `.config/kinomap_to_garmin.env`. | Add both variables and re-run. |
+| `Could not set gear ...` or gear fix not applied | Garmin rejects gear link for that activity (often date-related constraints). | Check the gear's **First use date** in Garmin Connect and ensure it is compatible with the activity date. |
+| Upload reports duplicate / no new upload | Duplicate detection matched existing activity via hash/metadata. | This is expected behaviour; use `--force-upload` only when you intentionally want to retry upload logic. |
 
 ------------------------------------------------------------------------
 
@@ -172,7 +253,13 @@ For existing Kinomap treadmill activities uploaded before sport-aware support wa
 use the historical cleanup utility:
 
 ```bash
-python3 fix_historical_treadmill_activities.py
+./run_historical.sh
+```
+
+Generic alternative:
+
+```bash
+./run_in_venv.sh fix_historical_treadmill_activities.py
 ```
 
 ### Dry-run mode (default)
@@ -180,7 +267,7 @@ python3 fix_historical_treadmill_activities.py
 Lists all historical treadmill activities needing fixes:
 
 ```bash
-python3 fix_historical_treadmill_activities.py
+./run_historical.sh
 ```
 
 Output shows:
@@ -192,7 +279,13 @@ Output shows:
 Automatically correct all historical activities:
 
 ```bash
-python3 fix_historical_treadmill_activities.py --apply
+./run_historical.sh --apply
+```
+
+Generic alternative:
+
+```bash
+./run_in_venv.sh fix_historical_treadmill_activities.py --apply
 ```
 
 This will:
@@ -200,8 +293,8 @@ This will:
 2. Set event type to `training` (if incorrect - same as Kinomap TCX uploads)
 3. Enforce single gear link to `gåmølle` (treadmill gear UUID from env)
 
-**Note:** The utility searches for activities with name `"Gå på tredemølle"` 
-since **2024-10-04** (the date sport-aware support was added).
+**Note:** The utility filters by `HISTORICAL_ACTIVITY_NAME` and `HISTORICAL_SINCE_DATE`
+(defaults: `Gå på tredemølle` and `2024-10-04`).
 
 ------------------------------------------------------------------------
 

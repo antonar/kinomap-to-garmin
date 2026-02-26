@@ -2,4 +2,4 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "${HERE}/run_in_venv.sh" "kinomap_to_garmin_secure.py" "$@"
+exec "${HERE}/run_in_venv.sh" "fix_historical_treadmill_activities.py" "$@"

@@ -14,6 +14,10 @@ This script:
 Usage:
     ./fix_historical_treadmill_activities.py         # Dry-run (list only)
     ./fix_historical_treadmill_activities.py --apply # Apply fixes
+
+Environment variables (optional):
+    HISTORICAL_ACTIVITY_NAME=Gå på tredemølle
+    HISTORICAL_SINCE_DATE=2024-10-04
 """
 
 import argparse
@@ -51,6 +55,22 @@ if not DEFAULT_TREADMILL_GEAR_UUID:
         "Set TREADMILL_GEAR_UUID or GEAR_UUID in .config/kinomap_to_garmin.env"
     )
 
+DEFAULT_HISTORICAL_ACTIVITY_NAME = os.getenv("HISTORICAL_ACTIVITY_NAME", "Gå på tredemølle").strip()
+if not DEFAULT_HISTORICAL_ACTIVITY_NAME:
+    raise SystemExit(
+        "ERROR: HISTORICAL_ACTIVITY_NAME is empty. "
+        "Set HISTORICAL_ACTIVITY_NAME in .config/kinomap_to_garmin.env"
+    )
+
+DEFAULT_HISTORICAL_SINCE_DATE = os.getenv("HISTORICAL_SINCE_DATE", "2024-10-04").strip()
+try:
+    datetime.strptime(DEFAULT_HISTORICAL_SINCE_DATE, "%Y-%m-%d")
+except ValueError:
+    raise SystemExit(
+        "ERROR: HISTORICAL_SINCE_DATE must be YYYY-MM-DD. "
+        f"Got: '{DEFAULT_HISTORICAL_SINCE_DATE}'"
+    )
+
 # ============================================================================
 # Main logic
 # ============================================================================
@@ -83,9 +103,9 @@ def get_gear_display_name(api: Garmin, gear_uuid: str) -> str:
     except Exception:
         return gear_uuid[:8] + "..."
 
-def get_historical_treadmill_activities(api: Garmin, since_date: str) -> list[dict]:
+def get_historical_treadmill_activities(api: Garmin, activity_name: str, since_date: str) -> list[dict]:
     """
-    Fetch all activities with name "Gå på tredemølle" since since_date.
+    Fetch all activities with matching activity_name since since_date.
     since_date format: "2024-10-04"
     """
     cutoff = datetime.strptime(since_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -101,7 +121,7 @@ def get_historical_treadmill_activities(api: Garmin, since_date: str) -> list[di
 
         for act in batch:
             # Check name
-            if act.get("activityName", "").strip() != "Gå på tredemølle":
+            if act.get("activityName", "").strip() != activity_name:
                 continue
 
             # Check date
@@ -136,7 +156,7 @@ def format_duration(seconds: float) -> str:
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Fix historical 'Gå på tredemølle' activities with correct type and gear."
+        description="Fix historical activities (by configured name and date window) with correct type and gear."
     )
     ap.add_argument(
         "--apply",
@@ -169,8 +189,15 @@ def main():
     api.login()
 
     # Fetch activities
-    print("Fetching historical 'Gå på tredemølle' activities since 2024-10-04…\n")
-    activities = get_historical_treadmill_activities(api, "2024-10-04")
+    print(
+        f"Fetching historical activities named '{DEFAULT_HISTORICAL_ACTIVITY_NAME}' "
+        f"since {DEFAULT_HISTORICAL_SINCE_DATE}…\n"
+    )
+    activities = get_historical_treadmill_activities(
+        api,
+        DEFAULT_HISTORICAL_ACTIVITY_NAME,
+        DEFAULT_HISTORICAL_SINCE_DATE,
+    )
 
     if not activities:
         print("No activities found.")
@@ -215,7 +242,10 @@ def main():
             already_correct.append(act)
 
     # Display results
-    print(f"Historical treadmill activities since 2024-10-04:\n")
+    print(
+        f"Historical activities named '{DEFAULT_HISTORICAL_ACTIVITY_NAME}' "
+        f"since {DEFAULT_HISTORICAL_SINCE_DATE}:\n"
+    )
     print(f"{'ID':>12}  {'Date':<19}  {'Current Type':<15}  {'Gear':<20}  {'Duration':<12}")
     print("=" * 95)
 
