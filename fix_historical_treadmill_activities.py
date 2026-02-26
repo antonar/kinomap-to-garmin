@@ -3,7 +3,9 @@
 Fix historical "Gå på tredemølle" activities on Garmin Connect.
 
 This script:
-1. Finds all activities named "Gå på tredemølle" since 2024-10-04
+1. Finds all activities matching HISTORICAL_ACTIVITY_NAME
+    (default: "Gå på tredemølle") since HISTORICAL_SINCE_DATE
+    (default: "2024-10-04")
 2. Lists them with current type, event type, and gear status
 3. Optionally fixes them (--apply flag):
    - Sets activity type to 'walking'
@@ -55,21 +57,8 @@ if not DEFAULT_TREADMILL_GEAR_UUID:
         "Set TREADMILL_GEAR_UUID or GEAR_UUID in .config/kinomap_to_garmin.env"
     )
 
-DEFAULT_HISTORICAL_ACTIVITY_NAME = os.getenv("HISTORICAL_ACTIVITY_NAME", "Gå på tredemølle").strip()
-if not DEFAULT_HISTORICAL_ACTIVITY_NAME:
-    raise SystemExit(
-        "ERROR: HISTORICAL_ACTIVITY_NAME is empty. "
-        "Set HISTORICAL_ACTIVITY_NAME in .config/kinomap_to_garmin.env"
-    )
-
-DEFAULT_HISTORICAL_SINCE_DATE = os.getenv("HISTORICAL_SINCE_DATE", "2024-10-04").strip()
-try:
-    datetime.strptime(DEFAULT_HISTORICAL_SINCE_DATE, "%Y-%m-%d")
-except ValueError:
-    raise SystemExit(
-        "ERROR: HISTORICAL_SINCE_DATE must be YYYY-MM-DD. "
-        f"Got: '{DEFAULT_HISTORICAL_SINCE_DATE}'"
-    )
+DEFAULT_HISTORICAL_ACTIVITY_NAME = "Gå på tredemølle"
+DEFAULT_HISTORICAL_SINCE_DATE = "2024-10-04"
 
 # ============================================================================
 # Main logic
@@ -154,6 +143,27 @@ def format_duration(seconds: float) -> str:
         return f"{hours}h {minutes:02d}m {secs:02d}s"
     return f"{minutes}m {secs:02d}s"
 
+
+def load_historical_filter_config() -> tuple[str, str]:
+    """Load and validate historical activity filter settings from environment."""
+    activity_name = os.getenv("HISTORICAL_ACTIVITY_NAME", DEFAULT_HISTORICAL_ACTIVITY_NAME).strip()
+    if not activity_name:
+        raise SystemExit(
+            "ERROR: HISTORICAL_ACTIVITY_NAME is empty. "
+            "Set HISTORICAL_ACTIVITY_NAME (in the environment or .config/kinomap_to_garmin.env)"
+        )
+
+    since_date = os.getenv("HISTORICAL_SINCE_DATE", DEFAULT_HISTORICAL_SINCE_DATE).strip()
+    try:
+        datetime.strptime(since_date, "%Y-%m-%d")
+    except ValueError:
+        raise SystemExit(
+            "ERROR: HISTORICAL_SINCE_DATE must be YYYY-MM-DD. "
+            f"Got: '{since_date}'"
+        )
+
+    return activity_name, since_date
+
 def main():
     ap = argparse.ArgumentParser(
         description="Fix historical activities (by configured name and date window) with correct type and gear."
@@ -176,6 +186,8 @@ def main():
     )
     args = ap.parse_args()
 
+    activity_name, since_date = load_historical_filter_config()
+
     # Load credentials
     load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
     email = os.getenv("GARMIN_EMAIL")
@@ -190,13 +202,13 @@ def main():
 
     # Fetch activities
     print(
-        f"Fetching historical activities named '{DEFAULT_HISTORICAL_ACTIVITY_NAME}' "
-        f"since {DEFAULT_HISTORICAL_SINCE_DATE}…\n"
+        f"Fetching historical activities named '{activity_name}' "
+        f"since {since_date}…\n"
     )
     activities = get_historical_treadmill_activities(
         api,
-        DEFAULT_HISTORICAL_ACTIVITY_NAME,
-        DEFAULT_HISTORICAL_SINCE_DATE,
+        activity_name,
+        since_date,
     )
 
     if not activities:
@@ -243,8 +255,8 @@ def main():
 
     # Display results
     print(
-        f"Historical activities named '{DEFAULT_HISTORICAL_ACTIVITY_NAME}' "
-        f"since {DEFAULT_HISTORICAL_SINCE_DATE}:\n"
+        f"Historical activities named '{activity_name}' "
+        f"since {since_date}:\n"
     )
     print(f"{'ID':>12}  {'Date':<19}  {'Current Type':<15}  {'Gear':<20}  {'Duration':<12}")
     print("=" * 95)

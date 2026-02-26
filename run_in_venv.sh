@@ -4,6 +4,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="${HERE}/.venv"
 REQ_FILE="${HERE}/requirements.txt"
+REQ_HASH_FILE="${VENV}/.requirements.sha256"
 
 usage() {
   cat <<EOF
@@ -35,13 +36,24 @@ if [[ ! -f "${SCRIPT_PATH}" ]]; then
   exit 1
 fi
 
+created_venv=0
 if [[ ! -x "${VENV}/bin/python" ]]; then
   python3 -m venv "${VENV}"
+  created_venv=1
 fi
 
-"${VENV}/bin/python" -m pip install -U pip >/dev/null
 if [[ -f "${REQ_FILE}" ]]; then
-  "${VENV}/bin/python" -m pip install -r "${REQ_FILE}" >/dev/null
+  req_hash="$(sha256sum "${REQ_FILE}" | awk '{print $1}')"
+  existing_hash=""
+  if [[ -f "${REQ_HASH_FILE}" ]]; then
+    existing_hash="$(cat "${REQ_HASH_FILE}")"
+  fi
+
+  if [[ ${created_venv} -eq 1 || "${req_hash}" != "${existing_hash}" ]]; then
+    "${VENV}/bin/python" -m pip install -U pip >/dev/null
+    "${VENV}/bin/python" -m pip install -r "${REQ_FILE}" >/dev/null
+    printf '%s\n' "${req_hash}" > "${REQ_HASH_FILE}"
+  fi
 fi
 
 exec "${VENV}/bin/python" "${SCRIPT_PATH}" "$@"
