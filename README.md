@@ -63,6 +63,8 @@ with at least:
     ├── .config/
     │   └── kinomap_to_garmin.env
     ├── .kinomap_garmin.json
+    ├── garmin_utils.py
+    ├── fix_historical_treadmill_activities.py
     ├── kinomap_to_garmin_secure.py
     ├── run_in_venv.sh
     ├── run_historical.sh

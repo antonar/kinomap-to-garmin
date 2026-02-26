@@ -127,7 +127,7 @@ def load_historical_filter_config() -> tuple[str, str]:
     if not activity_name:
         raise SystemExit(
             "ERROR: HISTORICAL_ACTIVITY_NAME is empty. "
-            "Set HISTORICAL_ACTIVITY_NAME (in the environment or .config/kinomap_to_garmin.env)"
+            "Set HISTORICAL_ACTIVITY_NAME (in the environment or in .config/kinomap_to_garmin.env when using wrapper scripts)"
         )
 
     since_date = os.getenv("HISTORICAL_SINCE_DATE", DEFAULT_HISTORICAL_SINCE_DATE).strip()
@@ -151,7 +151,7 @@ def load_runtime_config() -> tuple[str, str, str, str, str]:
     if not treadmill_gear_uuid:
         raise SystemExit(
             "ERROR: Gear UUID for treadmill is empty. "
-            "Set TREADMILL_GEAR_UUID or GEAR_UUID (in the environment or .config/kinomap_to_garmin.env)"
+            "Set TREADMILL_GEAR_UUID or GEAR_UUID (in the environment or in .config/kinomap_to_garmin.env when using wrapper scripts)"
         )
 
     activity_name, since_date = load_historical_filter_config()
@@ -159,7 +159,10 @@ def load_runtime_config() -> tuple[str, str, str, str, str]:
     email = os.getenv("GARMIN_EMAIL")
     password = os.getenv("GARMIN_PASSWORD")
     if not email or not password:
-        raise SystemExit("Set GARMIN_EMAIL and GARMIN_PASSWORD.")
+        raise SystemExit(
+            "ERROR: GARMIN_EMAIL or GARMIN_PASSWORD is missing. "
+            "Set GARMIN_EMAIL and GARMIN_PASSWORD (in the environment or in .config/kinomap_to_garmin.env when using wrapper scripts)"
+        )
 
     return activity_name, since_date, treadmill_gear_uuid, email, password
 

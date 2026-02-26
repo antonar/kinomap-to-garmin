@@ -6,6 +6,26 @@ VENV="${HERE}/.venv"
 REQ_FILE="${HERE}/requirements.txt"
 REQ_HASH_FILE="${VENV}/.requirements.sha256"
 
+create_venv() {
+  if ! python3 -m venv "${VENV}"; then
+    rm -rf "${VENV}"
+    echo "ERROR: Failed to create virtual environment at ${VENV}" >&2
+    exit 1
+  fi
+  created_venv=1
+}
+
+calc_requirements_hash() {
+  "${VENV}/bin/python" - "${REQ_FILE}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+print(hashlib.sha256(path.read_bytes()).hexdigest())
+PY
+}
+
 usage() {
   cat <<EOF
 Usage:
@@ -37,21 +57,23 @@ if [[ ! -f "${SCRIPT_PATH}" ]]; then
 fi
 
 created_venv=0
-if [[ ! -x "${VENV}/bin/python" ]]; then
-  python3 -m venv "${VENV}"
-  created_venv=1
+if [[ ! -d "${VENV}" ]]; then
+  create_venv
+elif [[ ! -x "${VENV}/bin/python" ]]; then
+  rm -rf "${VENV}"
+  create_venv
 fi
 
 if [[ -f "${REQ_FILE}" ]]; then
-  req_hash="$("${VENV}/bin/python" -c "import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())" "${REQ_FILE}")"
+  req_hash="$(calc_requirements_hash)"
   existing_hash=""
   if [[ -f "${REQ_HASH_FILE}" ]]; then
     existing_hash="$(cat "${REQ_HASH_FILE}")"
   fi
 
   if [[ ${created_venv} -eq 1 || "${req_hash}" != "${existing_hash}" ]]; then
-    "${VENV}/bin/python" -m pip install -U pip >/dev/null
-    "${VENV}/bin/python" -m pip install -r "${REQ_FILE}" >/dev/null
+    "${VENV}/bin/python" -m pip install -U pip
+    "${VENV}/bin/python" -m pip install -r "${REQ_FILE}"
     printf '%s\n' "${req_hash}" > "${REQ_HASH_FILE}"
   fi
 fi
