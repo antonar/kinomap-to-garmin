@@ -43,7 +43,7 @@ if [[ ! -x "${VENV}/bin/python" ]]; then
 fi
 
 if [[ -f "${REQ_FILE}" ]]; then
-  req_hash="$(sha256sum "${REQ_FILE}" | awk '{print $1}')"
+  req_hash="$("${VENV}/bin/python" -c "import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())" "${REQ_FILE}")"
   existing_hash=""
   if [[ -f "${REQ_HASH_FILE}" ]]; then
     existing_hash="$(cat "${REQ_HASH_FILE}")"

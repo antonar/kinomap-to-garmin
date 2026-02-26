@@ -43,19 +43,7 @@ from garmin_utils import (
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Load local env early
-load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
-
-# Defaults
-LEGACY_DEFAULT_GEAR_UUID = os.getenv("GEAR_UUID", "e188437497a041179d6ce51cf2024310")
-DEFAULT_TREADMILL_GEAR_UUID = os.getenv("TREADMILL_GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID).strip()
-
-# Validate that gear UUID is not empty
-if not DEFAULT_TREADMILL_GEAR_UUID:
-    raise SystemExit(
-        "ERROR: Gear UUID for treadmill is empty. "
-        "Set TREADMILL_GEAR_UUID or GEAR_UUID in .config/kinomap_to_garmin.env"
-    )
+LEGACY_DEFAULT_GEAR_UUID = "e188437497a041179d6ce51cf2024310"
 
 DEFAULT_HISTORICAL_ACTIVITY_NAME = "Gå på tredemølle"
 DEFAULT_HISTORICAL_SINCE_DATE = "2024-10-04"
@@ -81,18 +69,7 @@ def get_event_type_key(activity: dict) -> str:
         or "unknown"
     )
 
-def get_gear_display_name(api: Garmin, gear_uuid: str) -> str:
-    """Get display name for gear UUID."""
-    try:
-        # Try to find gear in user's gear list
-        # This is a best-effort lookup
-        if gear_uuid == DEFAULT_TREADMILL_GEAR_UUID:
-            return "gåmølle"
-        return gear_uuid[:8] + "..."
-    except Exception:
-        return gear_uuid[:8] + "..."
-
-def get_historical_treadmill_activities(api: Garmin, activity_name: str, since_date: str) -> list[dict]:
+def get_historical_activities_by_name(api: Garmin, activity_name: str, since_date: str) -> list[dict]:
     """
     Fetch all activities with matching activity_name since since_date.
     since_date format: "2024-10-04"
@@ -164,9 +141,34 @@ def load_historical_filter_config() -> tuple[str, str]:
 
     return activity_name, since_date
 
+
+def load_runtime_config() -> tuple[str, str, str, str, str]:
+    """Load and validate runtime configuration from environment and env file."""
+    load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
+
+    legacy_default_gear_uuid = os.getenv("GEAR_UUID", LEGACY_DEFAULT_GEAR_UUID)
+    treadmill_gear_uuid = os.getenv("TREADMILL_GEAR_UUID", legacy_default_gear_uuid).strip()
+    if not treadmill_gear_uuid:
+        raise SystemExit(
+            "ERROR: Gear UUID for treadmill is empty. "
+            "Set TREADMILL_GEAR_UUID or GEAR_UUID (in the environment or .config/kinomap_to_garmin.env)"
+        )
+
+    activity_name, since_date = load_historical_filter_config()
+
+    email = os.getenv("GARMIN_EMAIL")
+    password = os.getenv("GARMIN_PASSWORD")
+    if not email or not password:
+        raise SystemExit("Set GARMIN_EMAIL and GARMIN_PASSWORD.")
+
+    return activity_name, since_date, treadmill_gear_uuid, email, password
+
 def main():
     ap = argparse.ArgumentParser(
-        description="Fix historical activities (by configured name and date window) with correct type and gear."
+        description=(
+            "Fix historical treadmill/walking activities matching HISTORICAL_ACTIVITY_NAME and date window, "
+            "setting type to 'walking', event type to 'training', and attaching the treadmill gear."
+        )
     )
     ap.add_argument(
         "--apply",
@@ -186,15 +188,7 @@ def main():
     )
     args = ap.parse_args()
 
-    activity_name, since_date = load_historical_filter_config()
-
-    # Load credentials
-    load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
-    email = os.getenv("GARMIN_EMAIL")
-    password = os.getenv("GARMIN_PASSWORD")
-
-    if not email or not password:
-        raise SystemExit("Set GARMIN_EMAIL and GARMIN_PASSWORD.")
+    activity_name, since_date, treadmill_gear_uuid, email, password = load_runtime_config()
 
     # Login
     api = Garmin(email, password)
@@ -205,7 +199,7 @@ def main():
         f"Fetching historical activities named '{activity_name}' "
         f"since {since_date}…\n"
     )
-    activities = get_historical_treadmill_activities(
+    activities = get_historical_activities_by_name(
         api,
         activity_name,
         since_date,
@@ -236,7 +230,7 @@ def main():
 
         needs_type_fix = current_type != "walking"
         needs_event_type_fix = current_event_type != "training"
-        needs_gear_fix = DEFAULT_TREADMILL_GEAR_UUID not in gear_uuids
+        needs_gear_fix = treadmill_gear_uuid not in gear_uuids
 
         if needs_type_fix or needs_event_type_fix or needs_gear_fix:
             need_fixing.append({
@@ -270,7 +264,7 @@ def main():
         try:
             gear_payload = api.get_activity_gear(aid)
             gear_uuids = extract_activity_gear_uuids(gear_payload)
-            if DEFAULT_TREADMILL_GEAR_UUID in gear_uuids:
+            if treadmill_gear_uuid in gear_uuids:
                 gear_str = "gåmølle ✓"
             elif gear_uuids:
                 gear_str = f"{gear_uuids[0][:8]}… (annet)"
@@ -351,7 +345,7 @@ def main():
         # Fix gear
         if item["needs_gear"]:
             try:
-                single = enforce_single_gear(api, aid, DEFAULT_TREADMILL_GEAR_UUID, verbose=args.verbose)
+                single = enforce_single_gear(api, aid, treadmill_gear_uuid, verbose=args.verbose)
                 if single["failed"]:
                     gear_errors = [f"{gid}: {err}" for gid, err in single["failed"]]
                     print(f"  ✗ ID {aid}: Could not set gear: {'; '.join(gear_errors)}")
