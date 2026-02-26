@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fix historical "Gå på tredemølle" activities on Garmin Connect.
+Fix historical Garmin Connect activities filtered by a configurable name and start date.
 
 This script:
 1. Finds all activities matching HISTORICAL_ACTIVITY_NAME
