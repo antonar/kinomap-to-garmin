@@ -295,16 +295,18 @@ def rewrite_tcx_chronology(src_tcx: Path, out_tcx: Path) -> dict:
         if len(lap_tracks) > 1:
             keyed = []
             for idx, track in enumerate(lap_tracks):
-                first_time = None
-                t_node = track.find("tcx:Trackpoint/tcx:Time", ns)
-                if t_node is not None and t_node.text:
-                    txt = t_node.text.strip()
-                    if txt:
-                        try:
-                            first_time = _parse_iso_utc(txt)
-                        except Exception:
-                            first_time = None
-                keyed.append((first_time is None, first_time, idx, track))
+                earliest_time = None
+                for t_node in track.findall("tcx:Trackpoint/tcx:Time", ns):
+                    txt = (t_node.text or "").strip()
+                    if not txt:
+                        continue
+                    try:
+                        ts = _parse_iso_utc(txt)
+                    except Exception:
+                        continue
+                    if earliest_time is None or ts < earliest_time:
+                        earliest_time = ts
+                keyed.append((earliest_time is None, earliest_time, idx, track))
 
             sorted_tracks = [x[3] for x in sorted(keyed)]
             if sorted_tracks != lap_tracks:
@@ -738,6 +740,7 @@ def main():
     tcx = Path(args.tcx)
     if not tcx.exists():
         raise SystemExit(f"Fant ikke: {tcx}")
+    input_tcx = tcx
 
     timeline = inspect_tcx_timeline(tcx)
     timeline_non_monotonic = bool(timeline.get("non_monotonic"))
@@ -757,7 +760,7 @@ def main():
     use_chronofix = args.chronofix or args.chronofix_only or auto_chronofix
 
     if auto_chronofix:
-        print("Auto-chronofix: aktivert pga ikke-monoton tidslinje.")
+        print("Auto-chronofix: aktivert pga ikke-monoton tidslinje.", file=sys.stderr)
     elif timeline_non_monotonic and args.no_chronofix:
         print("Auto-chronofix: deaktivert med --no-chronofix (bruker original TCX).", file=sys.stderr)
 
@@ -795,7 +798,7 @@ def main():
     # Parse TCX metadata
     exp_start_unix, exp_dist, exp_duration, tcx_sport, creator_name = parse_tcx_metadata(tcx)
     desired_type_key = resolve_desired_activity_type(tcx_sport, creator_name)
-    title = f"{resolve_title_prefix(tcx_sport, creator_name)}{tcx.stem}"
+    title = f"{resolve_title_prefix(tcx_sport, creator_name)}{input_tcx.stem}"
     desired_gear_uuid = resolve_gear_uuid(tcx_sport, creator_name)
 
     if args.show_config:
