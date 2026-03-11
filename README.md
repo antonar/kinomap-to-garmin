@@ -188,6 +188,10 @@ You can also pass a TCX file from any other location.
   `--show-config`    Print resolved config (type/title/gear) before run
   `--force-upload`   Force upload even if SHA match exists
   `--dry-run`        No upload or patching --- only matching logic
+    `--chronofix`      Force chronology-fixed TCX for this run
+  `--chronofix-out`  Custom output path for chronology-fixed TCX
+  `--chronofix-only` Write chronology-fixed TCX and exit (no login/upload)
+    `--no-chronofix`   Disable automatic chronofix on non-monotonic timeline
 
 ### Recommended commands
 
@@ -207,6 +211,26 @@ Race event type (optional):
 
 ``` bash
 ./run_kinomap.sh "tcx/<file>.tcx" --race --show-config --sanity
+```
+
+If Kinomap resume/export has broken TCX timeline ordering, `chronofix` is now applied automatically.
+
+Force `chronofix` manually (also useful for testing):
+
+``` bash
+./run_kinomap.sh "tcx/<file>.tcx" --chronofix --show-config --sanity
+```
+
+Disable automatic `chronofix` for one run:
+
+``` bash
+./run_kinomap.sh "tcx/<file>.tcx" --no-chronofix --show-config --sanity
+```
+
+Only create a fixed file and stop (no Garmin API calls):
+
+``` bash
+./run_kinomap.sh "tcx/<file>.tcx" --chronofix-only
 ```
 
 ### Batch / loop over many files
@@ -246,6 +270,7 @@ done
 | `Set GARMIN_EMAIL and GARMIN_PASSWORD.` | Missing credentials in `.config/kinomap_to_garmin.env`. | Add both variables and re-run. |
 | `Could not set gear ...` or gear fix not applied | Garmin rejects gear link for that activity (often date-related constraints). | Check the gear's **First use date** in Garmin Connect and ensure it is compatible with the activity date. |
 | Upload reports duplicate / no new upload | Duplicate detection matched existing activity via hash/metadata. | This is expected behaviour; use `--force-upload` only when you intentionally want to retry upload logic. |
+| Warning about non-monotonic timeline | TCX Trackpoint timestamps are out of order (common with interrupted + resumed Kinomap sessions). | `chronofix` is auto-applied by default. Use `--no-chronofix` only if you explicitly want to test original ordering. |
 
 ------------------------------------------------------------------------
 

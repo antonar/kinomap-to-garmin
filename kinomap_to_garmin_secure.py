@@ -73,6 +73,39 @@ if RUNNING_ACTIVITY_TYPE_RAW not in ALLOWED_RUNNING_TYPES:
         file=sys.stderr,
     )
 
+DIST_TOL_M = 50.0
+DUR_TOL_S = 15.0
+STRICT_START_TOL_S = 120
+RELAXED_START_TOL_S = 1200
+
+def _collect_matches(
+    acts: list,
+    exp_start_unix: int,
+    exp_distance_m: float,
+    exp_duration_s: float,
+    start_tol_s: int,
+) -> list[dict]:
+    matches = []
+    for a in acts:
+        st = a.get("startTimeGMT")
+        if not st:
+            continue
+        try:
+            st_unix = parse_start_gmt(st)
+        except Exception:
+            continue
+
+        dist = a.get("distance")
+        dur = a.get("duration")
+        if dist is None or dur is None:
+            continue
+
+        if abs(st_unix - exp_start_unix) <= start_tol_s \
+           and abs(float(dist) - exp_distance_m) <= DIST_TOL_M \
+           and abs(float(dur) - exp_duration_s) <= DUR_TOL_S:
+            matches.append(a)
+    return matches
+
 def activity_exists(api: Garmin, activity_id: int) -> bool:
     """Check if activity exists; suppress expected 404 noise only."""
     stderr_buffer = StringIO()
@@ -151,6 +184,169 @@ def parse_tcx_metadata(tcx: Path):
 
     return start_unix, dist, dur, tcx_sport, creator_name
 
+def _parse_iso_utc(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+def inspect_tcx_timeline(tcx: Path) -> dict:
+    ns = {"tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"}
+    root = ET.parse(tcx).getroot()
+
+    laps = root.findall(".//tcx:Lap", ns)
+    lap_start = laps[0].attrib.get("StartTime") if laps else None
+
+    time_nodes = root.findall(".//tcx:Trackpoint/tcx:Time", ns)
+    ordered: list[datetime] = []
+    for node in time_nodes:
+        txt = (node.text or "").strip()
+        if not txt:
+            continue
+        try:
+            ordered.append(_parse_iso_utc(txt))
+        except Exception:
+            continue
+
+    if not ordered:
+        return {
+            "has_track_times": False,
+            "non_monotonic": False,
+            "lap_start": lap_start,
+            "first": None,
+            "last": None,
+            "min": None,
+            "max": None,
+            "first_minus_lap_start_s": None,
+            "min_minus_lap_start_s": None,
+        }
+
+    non_monotonic = any(ordered[i] < ordered[i - 1] for i in range(1, len(ordered)))
+    first_dt = ordered[0]
+    last_dt = ordered[-1]
+    min_dt = min(ordered)
+    max_dt = max(ordered)
+
+    first_delta = None
+    min_delta = None
+    if lap_start:
+        try:
+            lap_dt = _parse_iso_utc(lap_start)
+            first_delta = int((first_dt - lap_dt).total_seconds())
+            min_delta = int((min_dt - lap_dt).total_seconds())
+        except Exception:
+            pass
+
+    return {
+        "has_track_times": True,
+        "non_monotonic": non_monotonic,
+        "lap_start": lap_start,
+        "first": first_dt.isoformat().replace("+00:00", "Z"),
+        "last": last_dt.isoformat().replace("+00:00", "Z"),
+        "min": min_dt.isoformat().replace("+00:00", "Z"),
+        "max": max_dt.isoformat().replace("+00:00", "Z"),
+        "first_minus_lap_start_s": first_delta,
+        "min_minus_lap_start_s": min_delta,
+    }
+
+def rewrite_tcx_chronology(src_tcx: Path, out_tcx: Path) -> dict:
+    ns_uri = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
+    ns = {"tcx": ns_uri}
+    ET.register_namespace("", ns_uri)
+
+    tree = ET.parse(src_tcx)
+    root = tree.getroot()
+
+    laps = root.findall(".//tcx:Lap", ns)
+    changed_tracks = 0
+    changed_track_order = 0
+    changed_laps = 0
+
+    tracks = root.findall(".//tcx:Lap/tcx:Track", ns)
+
+    for track in tracks:
+        tps = list(track.findall("tcx:Trackpoint", ns))
+        if len(tps) <= 1:
+            continue
+
+        parsed = []
+        for idx, tp in enumerate(tps):
+            t_node = tp.find("tcx:Time", ns)
+            txt = (t_node.text or "").strip() if t_node is not None and t_node.text else ""
+            if not txt:
+                parsed.append((None, idx, tp))
+                continue
+            try:
+                parsed.append((_parse_iso_utc(txt), idx, tp))
+            except Exception:
+                parsed.append((None, idx, tp))
+
+        known = [x for x in parsed if x[0] is not None]
+        unknown = [x for x in parsed if x[0] is None]
+        sorted_known = sorted(known, key=lambda x: x[0])
+        rebuilt = [x[2] for x in sorted_known] + [x[2] for x in unknown]
+
+        if rebuilt != tps:
+            changed_tracks += 1
+            for tp in tps:
+                track.remove(tp)
+            for tp in rebuilt:
+                track.append(tp)
+
+    for lap in laps:
+        lap_tracks = list(lap.findall("tcx:Track", ns))
+        if len(lap_tracks) > 1:
+            keyed = []
+            for idx, track in enumerate(lap_tracks):
+                earliest_time = None
+                for t_node in track.findall("tcx:Trackpoint/tcx:Time", ns):
+                    txt = (t_node.text or "").strip()
+                    if not txt:
+                        continue
+                    try:
+                        ts = _parse_iso_utc(txt)
+                    except Exception:
+                        continue
+                    if earliest_time is None or ts < earliest_time:
+                        earliest_time = ts
+                keyed.append((earliest_time is None, earliest_time, idx, track))
+
+            sorted_tracks = [x[3] for x in sorted(keyed)]
+            if sorted_tracks != lap_tracks:
+                changed_track_order += 1
+                for track in lap_tracks:
+                    lap.remove(track)
+                for track in sorted_tracks:
+                    lap.append(track)
+
+        lap_times = []
+        for t_node in lap.findall(".//tcx:Trackpoint/tcx:Time", ns):
+            txt = (t_node.text or "").strip()
+            if not txt:
+                continue
+            try:
+                lap_times.append(_parse_iso_utc(txt))
+            except Exception:
+                continue
+        if not lap_times:
+            continue
+        new_start = min(lap_times).isoformat().replace("+00:00", "Z")
+        if lap.attrib.get("StartTime") != new_start:
+            lap.attrib["StartTime"] = new_start
+            changed_laps += 1
+
+    out_tcx.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(out_tcx, encoding="UTF-8", xml_declaration=True)
+
+    before = inspect_tcx_timeline(src_tcx)
+    after = inspect_tcx_timeline(out_tcx)
+
+    return {
+        "out": str(out_tcx),
+        "changed_tracks": changed_tracks,
+        "changed_track_order": changed_track_order,
+        "changed_laps": changed_laps,
+        "before": before,
+        "after": after,
+    }
+
 def resolve_desired_activity_type(tcx_sport: str, creator_name: str) -> str | None:
     sport = (tcx_sport or "").strip().lower()
     creator = (creator_name or "").strip().lower()
@@ -218,35 +414,32 @@ def find_uploaded_activity(
     exp_duration_s: float,
     timeout_s: int = 90,
 ) -> int:
-    dist_tol = 50.0   # meters
-    dur_tol = 15.0    # seconds
-    start_tol = 120   # seconds
-
     deadline = time.time() + timeout_s
     last_seen = None
 
     while time.time() < deadline:
         acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
 
-        matches = []
-        for a in acts:
-            st = a.get("startTimeGMT")
-            if not st:
-                continue
-            try:
-                st_unix = parse_start_gmt(st)
-            except Exception:
-                continue
+        matches = _collect_matches(
+            acts,
+            exp_start_unix,
+            exp_distance_m,
+            exp_duration_s,
+            STRICT_START_TOL_S,
+        )
 
-            dist = a.get("distance")
-            dur = a.get("duration")
-            if dist is None or dur is None:
-                continue
-
-            if abs(st_unix - exp_start_unix) <= start_tol \
-               and abs(float(dist) - exp_distance_m) <= dist_tol \
-               and abs(float(dur) - exp_duration_s) <= dur_tol:
-                matches.append(a)
+        if len(matches) != 1:
+            relaxed = _collect_matches(
+                acts,
+                exp_start_unix,
+                exp_distance_m,
+                exp_duration_s,
+                RELAXED_START_TOL_S,
+            )
+            if len(relaxed) == 1:
+                return relaxed[0]["activityId"]
+            if relaxed:
+                matches = relaxed
 
         if len(matches) == 1:
             return matches[0]["activityId"]
@@ -456,28 +649,25 @@ def find_existing_activity(api: Garmin, exp_start_unix: int, exp_distance_m: flo
     if acts is None:
         acts = api.get_activities(0, ACTIVITY_PAGE_SIZE)
 
-    dist_tol = 50.0
-    dur_tol = 15.0
-    start_tol = 120
+    strict = _collect_matches(
+        acts,
+        exp_start_unix,
+        exp_distance_m,
+        exp_duration_s,
+        STRICT_START_TOL_S,
+    )
+    if len(strict) == 1:
+        return strict[0]["activityId"]
 
-    for a in acts:
-        st = a.get("startTimeGMT")
-        if not st:
-            continue
-        try:
-            st_unix = parse_start_gmt(st)
-        except Exception:
-            continue
-
-        dist = a.get("distance")
-        dur = a.get("duration")
-        if dist is None or dur is None:
-            continue
-
-        if abs(st_unix - exp_start_unix) <= start_tol \
-           and abs(float(dist) - exp_distance_m) <= dist_tol \
-           and abs(float(dur) - exp_duration_s) <= dur_tol:
-            return a["activityId"]
+    relaxed = _collect_matches(
+        acts,
+        exp_start_unix,
+        exp_distance_m,
+        exp_duration_s,
+        RELAXED_START_TOL_S,
+    )
+    if len(relaxed) == 1:
+        return relaxed[0]["activityId"]
 
     return None
 
@@ -541,11 +731,58 @@ def main():
     ap.add_argument("--show-config", action="store_true", help="Print resolved config before matching/upload")
     ap.add_argument("--force-upload", action="store_true", help="Try upload even if we find duplicates (may hit 409)")
     ap.add_argument("--dry-run", action="store_true", help="Parse + duplicate-check only; do not upload or patch")
+    ap.add_argument("--chronofix", action="store_true", help="Write a chronology-fixed TCX and use it for this run")
+    ap.add_argument("--chronofix-out", default="", help="Output path for chronology-fixed TCX (default: <name>_chronofix.tcx)")
+    ap.add_argument("--chronofix-only", action="store_true", help="Write chronology-fixed TCX and exit without Garmin login/upload")
+    ap.add_argument("--no-chronofix", action="store_true", help="Disable automatic chronofix for non-monotonic TCX timelines")
     args = ap.parse_args()
 
     tcx = Path(args.tcx)
     if not tcx.exists():
         raise SystemExit(f"Fant ikke: {tcx}")
+    input_tcx = tcx
+
+    timeline = inspect_tcx_timeline(tcx)
+    timeline_non_monotonic = bool(timeline.get("non_monotonic"))
+    if timeline_non_monotonic:
+        print(
+            "ADVARSEL: TCX har ikke-monoton tidslinje i Trackpoints "
+            "(typisk ved avbrudd/resume i Kinomap).",
+            file=sys.stderr,
+        )
+        print(
+            f"  lap_start={timeline.get('lap_start')} min_tp={timeline.get('min')} "
+            f"max_tp={timeline.get('max')} min-lap={timeline.get('min_minus_lap_start_s')}s",
+            file=sys.stderr,
+        )
+
+    auto_chronofix = timeline_non_monotonic and not args.no_chronofix
+    use_chronofix = args.chronofix or args.chronofix_only or auto_chronofix
+
+    if auto_chronofix:
+        print("Auto-chronofix: aktivert pga ikke-monoton tidslinje.", file=sys.stderr)
+    elif timeline_non_monotonic and args.no_chronofix:
+        print("Auto-chronofix: deaktivert med --no-chronofix (bruker original TCX).", file=sys.stderr)
+
+    if use_chronofix:
+        if args.chronofix_out:
+            fixed_tcx = Path(args.chronofix_out)
+        else:
+            fixed_tcx = tcx.with_name(f"{tcx.stem}_chronofix{tcx.suffix}")
+        fix = rewrite_tcx_chronology(tcx, fixed_tcx)
+        tcx = fixed_tcx
+        print(f"Chronofix: skrev {fix['out']}")
+        print(f"- tracks sortert: {fix['changed_tracks']}")
+        print(f"- track-segmenter rekkefølge justert: {fix['changed_track_order']}")
+        print(f"- lap start justert: {fix['changed_laps']}")
+        if fix["before"].get("non_monotonic") and not fix["after"].get("non_monotonic"):
+            print("- timeline: ikke-monoton -> monotont sortert")
+        elif fix["after"].get("non_monotonic"):
+            print("- timeline: fortsatt ikke-monoton (sjekk fil manuelt)", file=sys.stderr)
+
+        if args.chronofix_only:
+            print("Chronofix-only: ferdig (ingen Garmin-login/opplasting).")
+            return
 
     # Load credentials from ~/.config/kinomap_to_garmin.env if present
     load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
@@ -561,7 +798,7 @@ def main():
     # Parse TCX metadata
     exp_start_unix, exp_dist, exp_duration, tcx_sport, creator_name = parse_tcx_metadata(tcx)
     desired_type_key = resolve_desired_activity_type(tcx_sport, creator_name)
-    title = f"{resolve_title_prefix(tcx_sport, creator_name)}{tcx.stem}"
+    title = f"{resolve_title_prefix(tcx_sport, creator_name)}{input_tcx.stem}"
     desired_gear_uuid = resolve_gear_uuid(tcx_sport, creator_name)
 
     if args.show_config:
