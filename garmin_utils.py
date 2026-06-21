@@ -29,6 +29,27 @@ EVENT_TYPE_RACE = 1
 ACTIVITY_PAGE_SIZE = 200
 
 
+def garmin_login(email: str, password: str, token_dir: Path) -> Garmin:
+    """Login to Garmin with OAuth2 token caching to avoid SSO rate limits.
+
+    Tries cached tokens first; falls back to password login and saves new tokens.
+    """
+    api = Garmin(email, password)
+    if token_dir.exists():
+        try:
+            api.login(tokenstore=str(token_dir))
+            print("Garmin: innlogget via token-cache (ingen SSO).")
+            return api
+        except Exception:
+            pass
+    # Full password-based login
+    print("Garmin: logger inn med passord (SSO)…")
+    api.login()
+    api.garth.dump(str(token_dir))
+    print("Garmin: tokens lagret til cache.")
+    return api
+
+
 def load_env_file(path: Path) -> None:
     """Load simple KEY=VALUE lines into environment (if not already set)."""
     if not path.exists():
