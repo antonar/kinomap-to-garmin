@@ -17,6 +17,7 @@ from garminconnect import Garmin
 from garminconnect import GarminConnectConnectionError
 from garmin_utils import (
     load_env_file,
+    garmin_login,
     enforce_single_gear,
     set_activity_type,
     set_event_type,
@@ -36,6 +37,7 @@ from garmin_utils import (
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / ".kinomap_garmin.json"
+TOKEN_DIR = BASE_DIR / ".garth_tokens"
 
 # Load local env early so module defaults below can see .config values.
 load_env_file(BASE_DIR / ".config" / "kinomap_to_garmin.env")
@@ -816,8 +818,7 @@ def main():
         print()
 
     # Login
-    api = Garmin(email, password)
-    api.login()
+    api = garmin_login(email, password, TOKEN_DIR)
 
     # ---- DRY RUN ----
     if args.dry_run:

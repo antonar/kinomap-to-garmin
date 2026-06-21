@@ -30,6 +30,7 @@ from pathlib import Path
 from garminconnect import Garmin
 from garmin_utils import (
     load_env_file,
+    garmin_login,
     extract_activity_gear_uuids,
     enforce_single_gear,
     set_activity_type,
@@ -42,6 +43,7 @@ from garmin_utils import (
 # ============================================================================
 
 BASE_DIR = Path(__file__).resolve().parent
+TOKEN_DIR = BASE_DIR / ".garth_tokens"
 
 LEGACY_DEFAULT_GEAR_UUID = "e188437497a041179d6ce51cf2024310"
 
@@ -194,8 +196,7 @@ def main():
     activity_name, since_date, treadmill_gear_uuid, email, password = load_runtime_config()
 
     # Login
-    api = Garmin(email, password)
-    api.login()
+    api = garmin_login(email, password, TOKEN_DIR)
 
     # Fetch activities
     print(
